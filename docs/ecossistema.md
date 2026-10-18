@@ -53,9 +53,24 @@ Proposta, ainda a definir:
 
 O `lucerna-sdk` traz os crates do protocolo e do manifesto, publicados no crates.io.
 
+## Painel e TUI
+
+O painel no shell serve para **olhar rápido e agir rápido**, sem tirar o usuário do que está fazendo. A TUI é o lugar do **trabalho completo**: editar, organizar e configurar.
+
+## O que o SDK oferece
+
+Estas capacidades vêm dos casos dos apps:
+
+1. **Estado enviado pelo app:** a bateria do celular, a próxima tarefa, as notas recentes. O painel só mostra.
+2. **Ações chamadas pelo painel:** "marcar tarefa", "salvar nota", "espelhar", com resposta de sucesso ou erro.
+3. **Itens na barra:** um ícone com um número ou um timer que o app põe na barra do shell (o pomodoro, o celular conectado).
+4. **Notificações:** pelo servidor de notificações que o shell já tem, sem nada novo.
+5. **Abrir na TUI:** o painel pede ao shell para abrir o terminal já no app, na nota ou tarefa certa.
+6. **Dois tamanhos:** o painel do app, que abre como os outros painéis, e, opcional, um card pequeno na aba Painel do dashboard do shell.
+
 ## Em aberto
 
-- O formato exato do protocolo e do manifesto.
+- O formato exato do protocolo e do manifesto, incluindo as mensagens de estado, de ação, dos itens na barra, das notificações e do pedido para abrir na TUI.
 - O versionamento: do protocolo, do manifesto e da API de componentes QML.
 - O empacotamento, incluindo o AUR.
 - A forma do `lucernad`: um daemon com módulos ou vários binários.
