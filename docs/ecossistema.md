@@ -97,10 +97,11 @@ Estas capacidades vêm dos casos dos apps:
 5. **Abrir na TUI:** o painel pode pedir ao shell para abrir o terminal já no app, na nota ou tarefa certa, **para o usuário**. É um atalho para o trabalho completo. A comunicação com o app nunca depende da TUI.
 6. **Dois tamanhos:** o painel do app, que abre como os outros painéis, e, opcional, um card pequeno na aba Painel do dashboard do shell.
 7. **Caminhos:** um crate pequeno com as regras de pastas de "Pastas e dados" (dados, configuração, cache e sockets), para os apps não divergirem.
+8. **Controle do "não perturbe" do shell:** um app pode pedir para ligar e desligar o não perturbe, como o foco da rotina faz. O shell decide e mostra quem ligou.
 
 ## Em aberto
 
-- O formato exato do protocolo e do manifesto, incluindo as mensagens de estado, de ação, dos itens na barra, das notificações e do pedido para abrir na TUI.
+- O formato exato do protocolo e do manifesto, incluindo as mensagens de estado, de ação, dos itens na barra, das notificações, do controle do não perturbe e do pedido para abrir na TUI.
 - O versionamento: do protocolo, do manifesto e da API de componentes QML.
 - O empacotamento, incluindo o AUR.
 - A forma do `lucernad`: um daemon com módulos ou vários binários.
