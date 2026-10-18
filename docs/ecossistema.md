@@ -25,9 +25,11 @@ O `lucerna` (Quickshell/QML) cuida da interface: painéis, temas, animações e 
 Cada app tem quatro partes, todas no repositório dele:
 
 1. **Núcleo:** uma biblioteca com a lógica.
-2. **TUI:** uma interface de terminal que funciona sozinha, feita com ratatui.
-3. **Provedor:** o processo que conversa com o shell.
+2. **Serviço:** um processo sem tela que guarda o estado, faz o trabalho e atende o socket. É ele que conversa com o shell.
+3. **TUI:** uma interface de terminal, feita com ratatui.
 4. **Painel:** o próprio painel, em QML.
+
+A TUI e o painel são clientes do serviço. Nenhum dos dois mexe nos dados direto.
 
 O pacote do app instala o painel e um manifesto numa pasta que o shell conhece, por exemplo `/usr/share/lucerna/apps/*.json`.
 
@@ -53,6 +55,17 @@ Proposta, ainda a definir:
 
 O `lucerna-sdk` traz os crates do protocolo e do manifesto, publicados no crates.io.
 
+## Serviço sob demanda
+
+O serviço é a única parte que mexe nos dados do app. Isso vale para o painel e para a TUI:
+
+- **Os dois são clientes do serviço.** Como ninguém mexe nos dados por fora, os dois nunca brigam pelo mesmo dado, e o que muda num aparece na hora no outro.
+- **A TUI é separada do painel e é uma alternativa a ele.** O shell nunca abre a TUI para conversar com o app.
+- **O painel abre o app sozinho, sem TUI.** Ele conecta ao socket, e o serviço sobe por ativação de socket do systemd do usuário (`<app>.socket` + `<app>.service`). Se o serviço não estiver rodando, a TUI o sobe pelo mesmo caminho.
+- **O serviço não fica rodando o tempo todo.** Ele sobe quando um cliente conecta, sai sozinho depois de um tempo sem clientes e sem trabalho pendente e, se cair, o systemd reinicia.
+
+**Trabalho agendado sem o serviço rodando (proposta):** um lembrete da rotina, por exemplo, precisa acontecer com o serviço parado. Então o serviço registra um timer do systemd do usuário para o próximo horário. O timer sobe o serviço, que avisa pelas notificações do shell e volta a sair. O tempo de ociosidade e o mecanismo exato do timer estão em aberto.
+
 ## Painel e TUI
 
 O painel no shell serve para **olhar rápido e agir rápido**, sem tirar o usuário do que está fazendo. A TUI é o lugar do **trabalho completo**: editar, organizar e configurar.
@@ -65,7 +78,7 @@ Estas capacidades vêm dos casos dos apps:
 2. **Ações chamadas pelo painel:** "marcar tarefa", "salvar nota", "espelhar", com resposta de sucesso ou erro.
 3. **Itens na barra:** um ícone com um número ou um timer que o app põe na barra do shell (o pomodoro, o celular conectado).
 4. **Notificações:** pelo servidor de notificações que o shell já tem, sem nada novo.
-5. **Abrir na TUI:** o painel pede ao shell para abrir o terminal já no app, na nota ou tarefa certa.
+5. **Abrir na TUI:** o painel pode pedir ao shell para abrir o terminal já no app, na nota ou tarefa certa, **para o usuário**. É um atalho para o trabalho completo. A comunicação com o app nunca depende da TUI.
 6. **Dois tamanhos:** o painel do app, que abre como os outros painéis, e, opcional, um card pequeno na aba Painel do dashboard do shell.
 
 ## Em aberto
@@ -74,3 +87,6 @@ Estas capacidades vêm dos casos dos apps:
 - O versionamento: do protocolo, do manifesto e da API de componentes QML.
 - O empacotamento, incluindo o AUR.
 - A forma do `lucernad`: um daemon com módulos ou vários binários.
+- O tempo de ociosidade do serviço antes de sair.
+- O mecanismo dos timers do systemd para o trabalho agendado.
+- O que o SDK oferece para o serviço sob demanda: um crate com a ativação por socket e a saída por ociosidade?
