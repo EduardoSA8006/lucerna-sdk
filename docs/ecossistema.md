@@ -70,6 +70,22 @@ O serviço é a única parte que mexe nos dados do app. Isso vale para o painel 
 
 O painel no shell serve para **olhar rápido e agir rápido**, sem tirar o usuário do que está fazendo. A TUI é o lugar do **trabalho completo**: editar, organizar e configurar.
 
+## Pastas e dados
+
+Por enquanto, os dados ficam só neste computador. As pastas seguem o padrão XDG:
+
+| Tipo | Onde | Exemplo |
+|---|---|---|
+| Documentos do usuário (o que ele abre e edita) | pasta visível e configurável | `~/Documentos/Notas` |
+| Dados internos | `~/.local/share/lucerna/<app>/` (`$XDG_DATA_HOME`) | banco da rotina, chaves de pareamento do celular |
+| Configuração | `~/.config/lucerna/<app>.toml` (`$XDG_CONFIG_HOME`) | preferências |
+| Cache (pode ser apagado e se refaz) | `~/.cache/lucerna/<app>/` (`$XDG_CACHE_HOME`) | índice de busca das notas, miniaturas |
+| Sockets | `$XDG_RUNTIME_DIR/lucerna/<app>.sock` | painel e TUI |
+
+- Cada app só mexe na própria subpasta.
+- O nome `lucerna` vale mesmo quando o app roda só na TUI.
+- O `lucerna-sdk` traz essas regras de caminho num crate pequeno, para os apps não divergirem.
+
 ## O que o SDK oferece
 
 Estas capacidades vêm dos casos dos apps:
@@ -80,6 +96,7 @@ Estas capacidades vêm dos casos dos apps:
 4. **Notificações:** pelo servidor de notificações que o shell já tem, sem nada novo.
 5. **Abrir na TUI:** o painel pode pedir ao shell para abrir o terminal já no app, na nota ou tarefa certa, **para o usuário**. É um atalho para o trabalho completo. A comunicação com o app nunca depende da TUI.
 6. **Dois tamanhos:** o painel do app, que abre como os outros painéis, e, opcional, um card pequeno na aba Painel do dashboard do shell.
+7. **Caminhos:** um crate pequeno com as regras de pastas de "Pastas e dados" (dados, configuração, cache e sockets), para os apps não divergirem.
 
 ## Em aberto
 
@@ -90,3 +107,7 @@ Estas capacidades vêm dos casos dos apps:
 - O tempo de ociosidade do serviço antes de sair.
 - O mecanismo dos timers do systemd para o trabalho agendado.
 - O que o SDK oferece para o serviço sob demanda: um crate com a ativação por socket e a saída por ociosidade?
+
+## Futuro
+
+- A sincronização dos dados entre aparelhos. Por enquanto, os dados ficam só neste computador.
