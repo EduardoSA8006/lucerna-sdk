@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/logo.svg" alt="Lucerna" height="120"></p>
+
 # lucerna-sdk
 
 Base comum do ecossistema Lucerna em Rust: o protocolo de conversa com o shell e o manifesto dos apps.
