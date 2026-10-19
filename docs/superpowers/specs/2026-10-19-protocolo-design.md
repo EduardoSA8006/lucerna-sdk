@@ -139,7 +139,7 @@ Um arquivo **JSON** por app em `/usr/share/lucerna/apps/<app>.json` (instalado p
 | O quê | Formato | Onde | Muda quando |
 | --- | --- | --- | --- |
 | Protocolo | `MAJOR.MINOR` | `lucerna.hello` | `MINOR`: algo novo e opcional; `MAJOR`: quebra |
-| Manifesto | inteiro (`schema`) | o TOML | o formato muda |
+| Manifesto | inteiro (`schema`) | o JSON | o formato muda |
 | API de componentes do shell | `MAJOR.MINOR` | `[panel].api` | o mesmo critério do protocolo |
 
 Os crates do SDK seguem semver próprio; a versão do protocolo que cada versão do crate fala está documentada no crate.
@@ -194,6 +194,6 @@ O `lucernad` segue o mesmo modelo (serviço por socket do systemd, saída por oc
 
 ## O que fica para o construtor
 
-- As bibliotecas (runtime assíncrono, JSON, CLI, TOML), desde que caibam na licença GPL-3.0.
+- As bibliotecas (runtime assíncrono, JSON, CLI), desde que caibam na licença GPL-3.0.
 - O formato exato dos argumentos de `bar.set` além dos campos listados, e a forma do timer agendado do systemd (desde que sobreviva a reinício quando pedido).
 - O limite de 1 MiB e os 60 s de ociosidade são escolhas deste documento (não do usuário), ajustáveis com motivo.
