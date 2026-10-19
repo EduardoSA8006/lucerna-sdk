@@ -14,7 +14,8 @@
 
 - Toolchain: `cargo`/`rustc` em `~/develop/cargo/bin` (ponha no `PATH`); `rust-toolchain.toml` com `channel = "1.95"` e `components = ["rustfmt", "clippy"]`.
 - Workspace: `resolver = "3"`, `edition = "2024"`, `rust-version = "1.95"`, `license = "GPL-3.0-only"`, `version = "0.1.0"`, `repository = "https://github.com/lucerna-desktop/lucerna-sdk"`; dependências só em `[workspace.dependencies]`; `Cargo.lock` versionado.
-- Lints do workspace: `unsafe_code = "deny"` (a única exceção é a leitura do fd do systemd, com `#[allow(unsafe_code)]` e comentário `// SAFETY:`), `missing_docs = "warn"` nos crates publicáveis; `clippy::all` em `warn`. O CI roda com `-D warnings`: nenhum aviso passa.
+- Lints do workspace (`[workspace.lints]`, herdados por todos com `[lints] workspace = true`): `unsafe_code = "deny"` (a única exceção é a leitura do fd do systemd, com `#[allow(unsafe_code)]` e comentário `// SAFETY:`) e `clippy::all` em `warn`. `missing_docs` **não** fica no workspace (quebraria a lib do `lucerna-hello`): cada um dos seis crates publicados abre o `lib.rs` com `#![warn(missing_docs)]`. O CI roda com `-D warnings`: nenhum aviso passa.
+- Metadados de publicação: `[workspace.package]` com `version`, `edition`, `rust-version`, `license`, `repository`, `homepage` (= `repository`), `authors = ["Eduardo Alves"]`, `keywords = ["lucerna", "ipc", "json-rpc", "systemd", "desktop"]`, `categories = ["os::linux-apis"]`; cada crate publicado tem `description` própria (texto na Tarefa onde nasce) e `readme = "../../README.md"`; o `lucerna-hello` tem `publish = false`.
 - Transporte: socket Unix `SOCK_STREAM` em `$XDG_RUNTIME_DIR/lucerna/<app>.sock`, pasta `0700`; uma mensagem JSON por linha, UTF-8, terminada em `\n`; limite padrão `1 MiB` = `1_048_576` bytes por mensagem (sem contar o `\n`), ajustável no `ServerBuilder`.
 - JSON-RPC 2.0: `"jsonrpc":"2.0"` obrigatório; `id` inteiro ou string; sem lotes (array → `-32600`).
 - Versão do protocolo: `1.0` (`MAJOR.MINOR`, só dígitos ASCII, sem sinal); compatível = mesmo `MAJOR`.
@@ -47,7 +48,7 @@
 | `LISTEN_FDS` | à mão, sem crate | são ~30 linhas (conferir `LISTEN_PID` = `std::process::id()`, `LISTEN_FDS = 1`, fd 3); `OwnedFd::try_clone()` reabre o fd com `CLOEXEC` sem `libc` (o fd 3 do systemd vem sem `CLOEXEC` e vazaria para o `systemctl` do agendador); `listenfd` traria mais do que usamos; `sd-notify` não é preciso (`Type=simple`) |
 | Coalescência | `tokio::sync::watch` por tópico + um mapa "pendente" por conexão (no máximo um retrato por tópico) | "só o último" e "coalescido por cliente" de graça, memória limitada por construção |
 | Resposta do `lucerna.subscribe` | `{"states":[{"topic","seq","data"}, ...]}`, a mesma forma do `lucerna.state` | o cliente trata retrato e mudança com o mesmo código |
-| `seq` | começa em `0` (estado inicial) e soma 1 a cada `publish`, por tópico, por vida do serviço | o cliente descarta `seq <= último visto` |
+| `seq` | começa em `0` (estado inicial) e soma 1 a cada `publish`, por tópico; volta a `0` quando o serviço reinicia; um cliente que reconecta zera o último `seq` visto (o `Client` é por conexão) | o cliente descarta `seq <= último visto`; registrado também no spec |
 | Tópico contínuo sem dado | retrato com `data: null` e `seq: 0` | o produtor só roda com assinante |
 | Resposta do `lucerna.unsubscribe` | `{}` | |
 | `hello` de outro app | `-32602` ("este serviço é o app X, não Y") | o painel detecta socket trocado |
@@ -55,18 +56,22 @@
 | `hello` no `shell.sock` | `client` = id do app, `app` = `"shell"` | coerente com a regra acima |
 | Mensagem > limite | `-32000` e a conexão fecha | faixa reservada ao protocolo |
 | Linha que não é JSON | `-32700` com `id: null`, a conexão continua | comportamento JSON-RPC |
+| `-32600` | usa o `id` da mensagem se der para lê-lo (inteiro ou string), senão `null` | o cliente casa o erro com o pedido |
+| Notificação do cliente | método do app roda e não gera resposta; método desconhecido ou antes do `hello` é ignorado em silêncio | JSON-RPC: notificação nunca tem resposta |
+| Fila de respostas | `mpsc` limitado (64) por conexão; cheia, o leitor para de ler pedidos até ela esvaziar | um cliente que não lê não faz a memória do serviço crescer |
 | Pedidos do app | cada um numa tarefa própria (respostas podem sair fora de ordem, pelo `id`); `lucerna.*` tratado em linha | um método lento não trava assinaturas |
 | `bar.set` | só os campos do spec: `id`, `icon`, `text?`, `ends_at?` (Unix s), `panel` (bool, padrão `false`) | YAGNI |
-| Timer agendado | arquivos de unidade `.timer` + `systemctl --user` (não `systemd-run`): persistente em `$XDG_CONFIG_HOME/systemd/user/` com `Persistent=true` e `enable --now`; não persistente em `$XDG_RUNTIME_DIR/systemd/user/` com `start` | unidade transitória vive em `/run` e some no reinício; um mecanismo só para os dois casos. Atrás do trait `Scheduler`; testes com `FakeScheduler` e com um `systemctl` falso (script que registra os argumentos); o teste real é `#[ignore]` |
+| Timer agendado | arquivos de unidade `.timer` + `systemctl --user` (não `systemd-run`): persistente em `$XDG_CONFIG_HOME/systemd/user/` com `Persistent=true`, `enable` e `restart` (o `restart` faz o reagendamento valer); não persistente em `$XDG_RUNTIME_DIR/systemd/user/` com `restart` | unidade transitória vive em `/run` e some no reinício; um mecanismo só para os dois casos. Atrás do trait `Scheduler`; testes com `FakeScheduler` e com um `systemctl` falso (script que registra os argumentos); o teste real é `#[ignore]` |
 | `OnCalendar` | `"AAAA-MM-DD HH:MM:SS UTC"` a partir do Unix s, com o algoritmo civil de Hinnant (sem `chrono`) | sem dependência por uma conversão |
 | Horário no passado | `ScheduleError::InPast` | o app faz o trabalho na hora |
-| Saída por uso errado | `64` (`EX_USAGE`) | o `2` do clap colidiria com "sem serviço" |
+| Saída por uso errado | `64` (`EX_USAGE`) | o `2` do clap colidiria com "sem serviço"; registrado também no spec |
+| Ajuda da CLI | em português: `help_template` próprio, `-h/--help` e `-V/--version` declarados à mão com texto em português, `allow_negative_numbers(true)` | as mensagens de erro de valor do clap continuam em inglês nesta versão |
 | Saída legível padrão | string → ela mesma; objeto → `chave: valor` por linha; lista → um item por linha; `null` → nada | o app pode trocar por um `render` próprio |
 | `--json` com erro | stdout vazio, stderr `{"error":{code,message,data?}}` | scripts leem um JSON só |
 | `status` | assina todos os `topics` (não os `streams`) e imprime; `--json` → `{"<tópico>": data}` | |
 | `watch` | retrato e cada mudança; `--json` → uma linha `{"topic","seq","data"}` por estado (JSON Lines); conexão perdida → `2` | |
 | Sem argumentos no `lucerna-hello` | imprime a ajuda e sai `0` (não há TUI) | |
-| `lucerna-hello` | id `hello`; `counter` = `{"value": n}`; `ticks` = `{"tick": k, "bands": [64 × f32]}` a cada 1 ms (imita o espectro); métodos `counter.add {"n"}`, `counter.reset`, `quiet.set {"on"}` (não perturbe, para o teste do shell) | `quiet.set` é o único acréscimo ao spec, para exercitar `dnd.*` |
+| `lucerna-hello` | id `hello`; `counter` = `{"value": n}`; `ticks` = `{"tick": k, "bands": [64 × f32]}` a cada 1 ms (imita o espectro); métodos `counter.add {"n"}`, `counter.reset`, `quiet.set {"on"}` (não perturbe, para o teste do shell) | `quiet.set` é o único acréscimo, para exercitar `dnd.*`; registrado também no spec |
 | `FakeShell` | público em `lucerna_service::testing` | todo app vai querer testar o que manda ao shell |
 | `RawConn` | público em `lucerna_ipc::raw` | testes e depuração, linha por linha como no `socat` |
 | Exemplos compartilhados | `testdata/manifest-cases.json` (casos de `api` e de manifestos válidos/inválidos com o `kind` do erro) | o shell lê o mesmo arquivo |
@@ -126,7 +131,9 @@ Textos exatos das mensagens de erro:
 | `hello_required` | `Faça o aperto de mão (lucerna.hello) antes dos outros pedidos.` |
 | `unknown_topic(t)` | `Tópico desconhecido: {t}.` |
 
-- [ ] **Passo 1: workspace.** `Cargo.toml` raiz com os valores das Global Constraints, `members = ["crates/*", "apps/*"]`, `[workspace.dependencies]`: `tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }`, `serde = { version = "1", features = ["derive"] }`, `serde_json = "1"`, `clap = "4"`, `thiserror = "2"`, `tempfile = "3"` e os seis crates por `path` + `version = "0.1.0"`; `[workspace.lints]` como nas Global Constraints. Cada crate usa `[lints] workspace = true` e `edition.workspace = true` etc. A doc do crate (`//!` no `lib.rs`) diz "fala o protocolo 1.0".
+- [ ] **Passo 0: branch.** `git switch -c feat/sdk main` (todas as tarefas vão nesta branch; o PR é aberto na Tarefa 13).
+
+- [ ] **Passo 1: workspace.** `Cargo.toml` raiz com os valores das Global Constraints, `members = ["crates/*", "apps/*"]`, `[workspace.dependencies]`: `tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }`, `serde = { version = "1", features = ["derive"] }`, `serde_json = "1"`, `clap = "4"`, `thiserror = "2"`, `tempfile = "3"` e os seis crates por `path` + `version = "0.1.0"`; `[workspace.lints]` como nas Global Constraints. Cada crate usa `[lints] workspace = true` e herda os campos de `[workspace.package]` (`version.workspace = true` etc.). `description` dos crates: protocol "Tipos das mensagens do protocolo do Lucerna (JSON-RPC 2.0), sem I/O."; paths "Pastas XDG e sockets dos apps do Lucerna."; manifest "Manifesto dos apps do Lucerna: tipos, validação e compatibilidade."; ipc "Cliente e servidor assíncronos do protocolo do Lucerna sobre socket Unix."; service "Esqueleto do serviço dos apps do Lucerna: systemd, ociosidade, shell e timers."; cli "Esqueleto da linha de comando dos apps do Lucerna." A doc do crate (`//!` no `lib.rs`) diz "fala o protocolo 1.0" e o `lib.rs` começa com `#![warn(missing_docs)]`.
 
 - [ ] **Passo 2: testes que falham** em `crates/lucerna-protocol/tests/protocol.rs`:
 
@@ -504,20 +511,20 @@ async fn trailing_fragment_at_eof_is_dropped() {
 
 **Files:**
 - Create: `crates/lucerna-ipc/src/{server,topic,raw}.rs`
-- Test: `crates/lucerna-ipc/tests/server.rs`
+- Test: `crates/lucerna-ipc/tests/server.rs`, `crates/lucerna-ipc/tests/common/mod.rs`
 
 **Interfaces:**
 - Consumes: Tarefas 1 e 4.
 - Produces:
   - `pub enum TopicKind { Common, Stream }`.
-  - `#[derive(Clone)] pub struct Topic` com `name(&self) -> &str`, `kind(&self) -> TopicKind`, `publish(&self, data: Value)` (soma 1 ao `seq`), `current(&self) -> State`, `subscribers(&self) -> usize`, `async fn wait_subscribed(&self)` (volta quando `subscribers() > 0`), `async fn wait_unsubscribed(&self)` (quando `== 0`).
+  - `#[derive(Clone)] pub struct Topic` com `name(&self) -> &str`, `kind(&self) -> TopicKind`, `publish(&self, data: Value)` (soma 1 ao `seq`; usa `watch::Sender::send_modify`, que guarda o valor mesmo sem receptores — o `send` falharia e perderia o estado), `current(&self) -> State`, `subscribers(&self) -> usize`, `async fn wait_subscribed(&self)` (volta quando `subscribers() > 0`), `async fn wait_unsubscribed(&self)` (quando `== 0`).
   - `pub struct ServerBuilder` com `pub fn new(app: &str, version: &str) -> Self`, `pub fn topic(&mut self, name: &str, initial: Value) -> Topic`, `pub fn stream(&mut self, name: &str) -> Topic` (estado inicial `null`), `pub fn method<F, Fut>(&mut self, name: &str, f: F)` com `F: Fn(Option<Value>) -> Fut + Send + Sync + 'static`, `Fut: Future<Output = Result<Value, RpcError>> + Send + 'static`, `pub fn max_message(&mut self, bytes: usize)`, `pub fn build(self) -> Server`. `method`/`topic`/`stream` entram em pânico com nome reservado (`lucerna.`) ou repetido (erro de programação).
   - `#[derive(Clone)] pub struct Server` com `pub async fn serve(&self, listener: UnixListener) -> io::Result<()>` (laço de `accept` com as conexões num `JoinSet`: largar o future fecha todas), `pub async fn serve_connection<S: AsyncRead + AsyncWrite + Send + 'static>(&self, stream: S)`, `pub fn connections(&self) -> watch::Receiver<usize>`, `pub fn hello_result(&self) -> HelloResult`.
   - `raw`: `pub struct RawConn` com `pub async fn connect(path: &Path) -> io::Result<RawConn>`, `pub async fn send(&mut self, v: &Value) -> io::Result<()>`, `pub async fn send_raw(&mut self, bytes: &[u8]) -> io::Result<()>`, `pub async fn recv(&mut self) -> io::Result<Option<Value>>` (espera até 5 s; estourou → `ErrorKind::TimedOut`), `pub async fn hello(&mut self, app: &str) -> io::Result<Value>` (manda `{"jsonrpc":"2.0","id":0,"method":"lucerna.hello","params":{"protocol":"1.0","client":"test","app":app}}` e devolve a resposta inteira).
 
-Comportamento da conexão (o que os testes fixam): `lucerna.*` tratado em linha, na ordem; métodos do app numa tarefa por pedido (pânico → `-32603`); escritor único por conexão com `tokio::select! { biased; }` dando prioridade às respostas e depois ao mapa pendente (`topic → State`, um por tópico) alimentado por uma tarefa por assinatura que espera `watch::Receiver::changed()`; ao assinar, o retrato vem de `borrow_and_update()` e entra na fila de respostas antes de a tarefa da assinatura nascer (nenhum `lucerna.state` chega antes da resposta). Fechar a conexão aborta as tarefas da conexão e devolve os assinantes.
+Comportamento da conexão (o que os testes fixam): `lucerna.*` tratado em linha, na ordem; respostas passam por um `mpsc` limitado a 64 — cheio, o leitor espera (para de ler pedidos) até o escritor esvaziar; métodos do app numa tarefa por pedido (pânico → `-32603`); escritor único por conexão com `tokio::select! { biased; }` dando prioridade às respostas e depois ao mapa pendente (`topic → State`, um por tópico) alimentado por uma tarefa por assinatura que espera `watch::Receiver::changed()`; ao assinar, o retrato vem de `borrow_and_update()` e entra na fila de respostas antes de a tarefa da assinatura nascer (nenhum `lucerna.state` chega antes da resposta). Fechar a conexão aborta as tarefas da conexão e devolve os assinantes.
 
-- [ ] **Passo 1: testes que falham.** Ajudante do arquivo: `async fn start(b: ServerBuilder) -> (TempDir, PathBuf, JoinHandle<()>)` que faz `bind` em `<tmp>/t.sock` e roda `serve`. O builder padrão `demo()` tem tópico `counter` (`{"value":0}`), stream `ticks`, método `counter.add` (soma `params.n`, publica e devolve `{"value":v}`), `slow.op` (dorme 200 ms e devolve `{}`), `boom` (`panic!`) e `app.fail` (`Err(RpcError::app(1, "Falhou."))`).
+- [ ] **Passo 1: testes que falham.** Ajudante em `crates/lucerna-ipc/tests/common/mod.rs` (a Tarefa 6 reusa com `mod common;`): `async fn start(b: ServerBuilder) -> (TempDir, PathBuf, JoinHandle<()>)` que faz `bind` em `<tmp>/t.sock` e roda `serve`. O builder padrão `demo()` tem tópico `counter` (`{"value":0}`), stream `ticks`, método `counter.add` (soma `params.n`, publica e devolve `{"value":v}`), `slow.op` (dorme 200 ms e devolve `{}`), `boom` (`panic!`) e `app.fail` (`Err(RpcError::app(1, "Falhou."))`).
 
 ```rust
 #[tokio::test]
@@ -632,6 +639,18 @@ async fn too_large_message_gets_32000_and_closes() {
     // builder com max_message(1000); send_raw de 2000 bytes + \n → error -32000, depois recv → None.
 }
 
+#[tokio::test]
+async fn client_notifications_get_no_response() {
+    // após hello: {"jsonrpc":"2.0","method":"counter.add","params":{"n":4}} (sem id) → nenhuma resposta;
+    // {"jsonrpc":"2.0","method":"nada.disso"} → nenhuma resposta; depois um pedido counter.add {"n":1} id 9
+    // → a próxima mensagem é a resposta id 9 com {"value":5} (a notificação rodou, e nada veio antes).
+}
+
+#[tokio::test]
+async fn invalid_request_keeps_the_id_when_readable() {
+    // {"jsonrpc":"1.0","id":8,"method":"a.b"} → error -32600 com id 8; [1,2] → -32600 com id null.
+}
+
 #[test]
 #[should_panic(expected = "reservado")]
 fn reserved_method_names_are_refused() { ServerBuilder::new("d", "0").method("lucerna.x", |_| async { Ok(Value::Null) }); }
@@ -641,7 +660,7 @@ Os testes com corpo em comentário seguem o mesmo molde dos vizinhos; o comentá
 
 - [ ] **Passo 2: rodar e ver falhar.** `cargo test -p lucerna-ipc --test server` → erro de compilação.
 - [ ] **Passo 3: implementar** `topic.rs` (`watch::Sender<State>` + `watch::Sender<usize>` de assinantes), `server.rs` e `raw.rs` como descrito. Mensagens de pânico do builder contêm "reservado" / "repetido".
-- [ ] **Passo 4: verificar.** `cargo test -p lucerna-ipc` → todos passam (framing + 16 do servidor); rode 5 vezes seguidas (`for i in 1 2 3 4 5; do cargo test -p lucerna-ipc -q || break; done`) sem falha intermitente.
+- [ ] **Passo 4: verificar.** `cargo test -p lucerna-ipc` → todos passam (framing + 18 do servidor); rode 5 vezes seguidas (`for i in 1 2 3 4 5; do cargo test -p lucerna-ipc -q || break; done`) sem falha intermitente.
 - [ ] **Passo 5: commit.** `git commit -m "IPC: servidor com aperto de mão, métodos e assinaturas coalescidas"`
 
 ---
@@ -659,7 +678,7 @@ Os testes com corpo em comentário seguem o mesmo molde dos vizinhos; o comentá
   - `pub struct Client` com `pub async fn connect(path: &Path, client: &str, app: &str) -> Result<Client, ClientError>` (faz o `hello` com `PROTOCOL_VERSION`), `pub fn hello(&self) -> &HelloResult`, `pub async fn call(&self, method: &str, params: Option<Value>) -> Result<Value, ClientError>`, `pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<(), ClientError>`, `pub async fn subscribe(&self, topics: &[&str]) -> Result<Vec<State>, ClientError>`, `pub async fn unsubscribe(&self, topics: &[&str]) -> Result<(), ClientError>`, `pub async fn next_state(&mut self) -> Option<State>` (`None` quando a conexão fecha), `pub async fn closed(&self)` (volta quando a conexão fecha).
   - Uma tarefa leitora despacha respostas por `id` (`oneshot`) e põe os `lucerna.state` num `mpsc` limitado (256; cheio → a leitora espera, e o servidor coalesce); descarta `seq <= último visto` por tópico (o retrato do `subscribe` atualiza o último visto).
 
-- [ ] **Passo 1: testes que falham** (reusam o `demo()`/`start()` da Tarefa 5 copiados para `tests/common/mod.rs`, que os dois arquivos usam com `mod common;`):
+- [ ] **Passo 1: testes que falham** (usam o `demo()`/`start()` de `tests/common/mod.rs`, criado na Tarefa 5, com `mod common;`):
 
 ```rust
 #[tokio::test]
@@ -714,7 +733,7 @@ async fn out_of_order_seq_is_dropped() {
 **Interfaces:**
 - Consumes: `lucerna_ipc::{ServerBuilder, Server}`; `lucerna_paths::{Env, AppPaths, create_private_dir, shell_socket}`.
 - Produces:
-  - `activation`: `pub fn listen_fds(listen_pid: Option<&str>, listen_fds: Option<&str>, own_pid: u32) -> usize` (0 se o pid não bate ou falta algo); `pub fn listener_from_fd(fd: OwnedFd) -> io::Result<std::os::unix::net::UnixListener>` (reabre com `try_clone()` para ter `CLOEXEC`, confere `local_addr()`, põe não bloqueante); `pub enum Activation { Systemd, Manual(SocketGuard) }` (`SocketGuard` apaga o arquivo ao cair); `pub fn bind_manual(socket: &Path) -> Result<(UnixListener, SocketGuard), ServiceError>` (cria a pasta `0700`; arquivo existente: se um `connect` funciona → `ServiceError::AlreadyRunning(path)`, senão apaga e faz `bind`); `pub fn listener_from_env(paths: &AppPaths) -> Result<(tokio::net::UnixListener, Activation), ServiceError>` (lê `LISTEN_PID`/`LISTEN_FDS`, com `1` usa o fd 3 — único `unsafe`, `OwnedFd::from_raw_fd(3)`; com mais de 1 → erro).
+  - `activation`: `pub fn listen_fds(listen_pid: Option<&str>, listen_fds: Option<&str>, own_pid: u32) -> usize` (0 se o pid não bate ou falta algo); `pub fn listener_from_fd(fd: OwnedFd) -> io::Result<std::os::unix::net::UnixListener>` (reabre com `try_clone()` para ter `CLOEXEC`, confere `local_addr()`, põe não bloqueante). Limitação documentada no código: sem `libc` não conferimos `SO_TYPE` nem `SO_ACCEPTCONN`; o `local_addr()` garante que é um socket Unix, e a unidade `.socket` (`ListenStream=`) garante fluxo em escuta — um fd errado falha no primeiro `accept` com o erro do sistema; `pub enum Activation { Systemd, Manual(SocketGuard) }` (`SocketGuard` apaga o arquivo ao cair); `pub fn bind_manual(socket: &Path) -> Result<(UnixListener, SocketGuard), ServiceError>` (cria a pasta `0700`; arquivo existente: se um `connect` funciona → `ServiceError::AlreadyRunning(path)`, senão apaga e faz `bind`); `pub fn listener_from_env(paths: &AppPaths) -> Result<(tokio::net::UnixListener, Activation), ServiceError>` (lê `LISTEN_PID`/`LISTEN_FDS`, com `1` usa o fd 3 — único `unsafe`, `OwnedFd::from_raw_fd(3)`; com mais de 1 → erro).
   - `idle`: `#[derive(Clone)] pub struct WorkTracker` com `new()`, `hold(&self) -> WorkGuard` (RAII), `pending(&self) -> usize`, `watch(&self) -> watch::Receiver<usize>`; `pub async fn wait_idle(connections: watch::Receiver<usize>, work: watch::Receiver<usize>, timeout: Duration)` — volta quando os dois ficam em 0 por `timeout` seguidos.
   - `service`: `pub const DEFAULT_IDLE: Duration = Duration::from_secs(60);` `pub struct ServiceBuilder` com `pub fn new(app: &str, version: &str) -> Self`, `pub fn server(&mut self) -> &mut ServerBuilder`, `pub fn idle_timeout(&mut self, d: Duration)`, `pub fn work(&self) -> WorkTracker`, `pub async fn run(self) -> Result<(), ServiceError>` (`Env::from_process()`, `LUCERNA_IDLE_TIMEOUT_MS` se houver, `listener_from_env`, `shell_socket`; sai em `Ok(())` por ociosidade ou `SIGTERM`/`SIGINT`), `pub async fn run_with(self, listener: tokio::net::UnixListener, shell_socket: Option<PathBuf>) -> Result<(), ServiceError>` (nesta tarefa `shell_socket` é ignorado; a Tarefa 8 o liga).
   - `pub enum ServiceError { Paths(PathsError), AlreadyRunning(PathBuf), Activation(String), Io(io::Error) }` — texto de `AlreadyRunning`: `Já há um serviço atendendo em {path}.`
@@ -816,10 +835,10 @@ async fn run_with_serves_then_exits_when_idle() {
 - Consumes: `lucerna_ipc::{Client, ServerBuilder, Server}`; `lucerna_protocol::{BarItem, methods::*}`; `WorkTracker`.
 - Produces:
   - `#[derive(Clone)] pub struct Shell` com `pub fn new(app: &str, work: WorkTracker) -> Shell`, `pub fn spawn(&self, socket: PathBuf) -> ShellTask` (`ShellTask` aborta ao cair), `bar_set(&self, item: BarItem)`, `bar_clear(&self, id: &str)`, `dnd_request(&self, reason: &str)`, `dnd_release(&self)`, `tui_open(&self, args: Vec<String>)`, `panel_open(&self, page: Option<String>)`, `is_connected(&self) -> bool`. Nenhum método é `async` nem devolve erro.
-  - Estado desejado: `BTreeMap<String, BarItem>` + `Option<String>` (motivo do não perturbe). A tarefa de conexão: conecta (`client` = id do app, `app` = `"shell"`), aplica o desejado inteiro (`bar.set` de cada item, `dnd.request` se houver), depois a cada mudança manda só a diferença em relação ao aplicado (`bar.set` novo/alterado, `bar.clear` removido, `dnd.request`/`dnd.release` na troca); caiu → espera `backoff(tentativa)` e tenta de novo (zera a tentativa ao conectar). `tui_open`/`panel_open` só vão se conectado; senão somem.
+  - Estado desejado: `BTreeMap<String, BarItem>` + `Option<String>` (motivo do não perturbe). A tarefa de conexão: conecta (`client` = id do app, `app` = `"shell"`), aplica o desejado inteiro (`bar.set` de cada item, `dnd.request` se houver), depois a cada mudança manda só a diferença em relação ao aplicado (`bar.set` novo/alterado, `bar.clear` removido, `dnd.request`/`dnd.release` na troca), um pedido por vez com `Client::call`, esperando cada resposta antes do próximo (a ordem chega igual ao shell: `bar.set` antes do `bar.clear`); caiu → espera `backoff(tentativa)` e tenta de novo (zera a tentativa ao conectar). `tui_open`/`panel_open` só vão se conectado; senão somem.
   - Enquanto houver item de barra desejado, o `Shell` segura um `WorkGuard`.
   - `pub fn backoff(attempt: u32) -> Duration` = `min(100 ms × 2^attempt, 5 s)`.
-  - `testing::FakeShell` com `pub async fn start(path: &Path) -> FakeShell` (um `Server` do `lucerna-ipc` com `app = "shell"` e os seis métodos, cada um registrando `(method, params)` e devolvendo `{}`), `pub async fn next_call(&mut self) -> (String, Value)` (até 5 s, senão pânico), `pub async fn no_call_within(&mut self, d: Duration)` (pânico se chegar algo), `pub async fn wait_connected(&self)`, `pub async fn wait_disconnected(&self)`, `pub async fn stop(self)` (fecha as conexões e apaga o socket).
+  - `testing::FakeShell` com `pub async fn start(path: &Path) -> FakeShell` (um `Server` do `lucerna-ipc` com `app = "shell"` e os seis métodos, cada um registrando `(method, params)` e devolvendo `{}`), `pub async fn next_call(&mut self) -> (String, Value)` (até 7 s — cobre o teto de 5 s da reconexão com folga —, senão pânico), `pub async fn no_call_within(&mut self, d: Duration)` (pânico se chegar algo), `pub async fn wait_connected(&self)`, `pub async fn wait_disconnected(&self)`, `pub async fn stop(self)` (fecha as conexões e apaga o socket).
 
 - [ ] **Passo 1: testes que falham.**
 
@@ -856,7 +875,7 @@ async fn without_shell_calls_are_silent() {
 #[tokio::test]
 async fn reconnect_reapplies_desired_state() {
     // fake A; bar_set("3") + dnd_request("foco") chegam; fake.stop(); (o shell desfaria tudo aqui)
-    // fake B no mesmo caminho: em até 6 s chegam bar.set text "3" e dnd.request "foco" (em qualquer ordem), nada mais.
+    // fake B no mesmo caminho: em até 7 s chegam bar.set text "3" e dnd.request "foco" (em qualquer ordem), nada mais.
 }
 
 #[tokio::test]
@@ -891,7 +910,7 @@ async fn shell_sees_the_connection_close_when_the_service_ends() {
 ```
 
 - [ ] **Passo 2: rodar e ver falhar.** `cargo test -p lucerna-service --test shell` → erro de compilação.
-- [ ] **Passo 3: implementar** `shell.rs` (estado desejado num `watch::Sender<Desired>`; a tarefa compara com o aplicado) e `testing.rs`.
+- [ ] **Passo 3: implementar** `shell.rs` (estado desejado num `watch::Sender<Desired>`; a tarefa compara com o aplicado) e `testing.rs`. A tarefa de conexão nunca usa `notify` para os pedidos ao shell: só `call`, em sequência.
 - [ ] **Passo 4: verificar.** `cargo test -p lucerna-service` → tudo passa; repetir 5 vezes sem falha intermitente.
 - [ ] **Passo 5: commit.** `git commit -m "Serviço: barra e não perturbe no shell, com reconexão"`
 
@@ -927,7 +946,7 @@ Persistent=true            ← só se persistent
 WantedBy=timers.target     ← só se persistent
 ```
 
-  - `pub struct SystemdScheduler` com `pub fn new(app: &str, env: &Env) -> Result<SystemdScheduler, ScheduleError>` e `pub fn with_systemctl(self, program: PathBuf) -> Self` (padrão `"systemctl"`). `schedule`: confere nome e `at_unix > agora` (`InPast`), escreve o `.timer` (persistente em `$XDG_CONFIG_HOME/systemd/user/`, senão em `$XDG_RUNTIME_DIR/systemd/user/`; cria a pasta), roda `systemctl --user daemon-reload` e depois `systemctl --user enable --now <unit>` (persistente) ou `systemctl --user restart <unit>` (não persistente; `restart` para reagendar um que já existe). `cancel`: `systemctl --user disable --now <unit>` (falha ignorada: pode não existir), apaga os dois arquivos possíveis, `daemon-reload`.
+  - `pub struct SystemdScheduler` com `pub fn new(app: &str, env: &Env) -> Result<SystemdScheduler, ScheduleError>` e `pub fn with_systemctl(self, program: PathBuf) -> Self` (padrão `"systemctl"`). `schedule`: confere nome e `at_unix > agora` (`InPast`), escreve o `.timer` (persistente em `$XDG_CONFIG_HOME/systemd/user/`, senão em `$XDG_RUNTIME_DIR/systemd/user/`; cria a pasta), roda `systemctl --user daemon-reload` e depois, persistente, `systemctl --user enable <unit>` e `systemctl --user restart <unit>`; não persistente, só `systemctl --user restart <unit>` (o `restart` faz o horário novo valer quando o timer já existia). `cancel`: `systemctl --user disable --now <unit>` (falha ignorada: pode não existir), apaga os dois arquivos possíveis, `daemon-reload`.
   - `pub struct FakeScheduler` (em `testing`): guarda `Mutex<BTreeMap<String, TimerSpec>>`, `pub fn timers(&self) -> BTreeMap<String, TimerSpec>`.
   - Doc do módulo: o timer sobe `lucerna-<app>.service`; o app confere o trabalho vencido ao subir e chama `cancel` depois de fazê-lo (um `OnCalendar` com data fixa não volta a disparar, mas o arquivo ficaria).
 
@@ -951,6 +970,10 @@ fn renders_persistent_and_runtime_timers() {
     assert!(!r.contains("Persistent") && !r.contains("[Install]"));
 }
 
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
 fn fake_systemctl(dir: &Path) -> (PathBuf, PathBuf) {
     let log = dir.join("log");
     let bin = dir.join("systemctl");
@@ -971,13 +994,20 @@ fn persistent_schedule_writes_config_unit_and_enables() {
     s.schedule(&TimerSpec { name: "lembrete".into(), at_unix: now() + 3600, persistent: true }).unwrap();
     assert!(t.path().join("config/systemd/user/lucerna-routine-lembrete.timer").exists());
     assert_eq!(std::fs::read_to_string(&log).unwrap(),
-        "--user daemon-reload\n--user enable --now lucerna-routine-lembrete.timer\n");
+        "--user daemon-reload\n--user enable lucerna-routine-lembrete.timer\n--user restart lucerna-routine-lembrete.timer\n");
 }
 
 #[test]
 fn runtime_schedule_and_cancel() {
     // persistent false → arquivo em run/systemd/user/, log "--user daemon-reload\n--user restart <unit>\n";
     // cancel("lembrete") → arquivo apagado; log termina com "--user disable --now <unit>\n--user daemon-reload\n".
+}
+
+#[test]
+fn rescheduling_changes_the_time() {
+    // persistente em now()+3600 e de novo em now()+7200 com o mesmo nome: o arquivo tem
+    // format!("OnCalendar={}\n", calendar_utc(now+7200)) e não tem mais o horário antigo;
+    // o log tem duas vezes a sequência daemon-reload / enable / restart.
 }
 
 #[test]
@@ -1003,7 +1033,7 @@ fn real_systemd_round_trip() {
 
 - [ ] **Passo 2: rodar e ver falhar.** `cargo test -p lucerna-service --test schedule` → erro de compilação.
 - [ ] **Passo 3: implementar** (`std::process::Command`, sem `tokio::process`: chamadas raras e curtas; doc avisa para chamar de `spawn_blocking` se o app quiser).
-- [ ] **Passo 4: verificar.** `cargo test -p lucerna-service --test schedule` → 7 passed, 1 ignored. Na máquina do usuário (não no CI): `cargo test -p lucerna-service --test schedule -- --ignored` → 1 passed.
+- [ ] **Passo 4: verificar.** `cargo test -p lucerna-service --test schedule` → 8 passed, 1 ignored. Na máquina do usuário (não no CI): `cargo test -p lucerna-service --test schedule -- --ignored` → 1 passed.
 - [ ] **Passo 5: commit.** `git commit -m "Serviço: timers agendados do systemd do usuário"`
 
 ---
@@ -1020,13 +1050,13 @@ fn real_systemd_round_trip() {
   - `pub const EXIT_OK: i32 = 0; EXIT_APP: i32 = 1; EXIT_NO_SERVICE: i32 = 2; EXIT_USAGE: i32 = 64;`
   - `pub struct Call { pub method: String, pub params: Option<Value> }`.
   - `pub struct CliCommand { pub command: clap::Command, pub to_call: fn(&ArgMatches) -> Call, pub render: Option<fn(&Value) -> String> }`.
-  - `pub struct CliApp` com `pub fn new(app: &str, bin: &str, about: &str) -> Self`, `pub fn command(self, c: CliCommand) -> Self` (pânico com nome `status`, `watch`, `serve` ou repetido), `pub fn clap(&self) -> clap::Command` (os do app + `status` "Mostra o estado de todos os tópicos." + `watch <tópico>` "Acompanha as mudanças de um tópico." + `serve` oculto + `--json` global "Imprime o resultado em JSON, para scripts."), `pub fn parse_from<I, T>(&self, args: I) -> Result<Invocation, clap::Error>` (`I: IntoIterator<Item = T>, T: Into<OsString> + Clone`), `pub async fn run(&self, run: CliRun, env: &Env, out: &mut (dyn Write + Send), err: &mut (dyn Write + Send)) -> i32`.
+  - `pub struct CliApp` com `pub fn new(app: &str, bin: &str, version: &str, about: &str) -> Self` (o app passa `env!("CARGO_PKG_VERSION")`), `pub fn command(self, c: CliCommand) -> Self` (pânico com nome `status`, `watch`, `serve` ou repetido), `pub fn clap(&self) -> clap::Command` (os do app + `status` "Mostra o estado de todos os tópicos." + `watch <tópico>` "Acompanha as mudanças de um tópico." + `serve` oculto + `--json` global "Imprime o resultado em JSON, para scripts."; `allow_negative_numbers(true)`; ajuda em português: `help_template("{about}\n\nUso: {usage}\n\n{all-args}")`, `disable_help_flag`/`disable_version_flag`/`disable_help_subcommand` e `-h/--help` "Mostra esta ajuda." e `-V/--version` "Mostra a versão." declarados com `ArgAction::Help`/`ArgAction::Version`, `subcommand_help_heading("Comandos")`, `next_help_heading("Opções")`), `pub fn parse_from<I, T>(&self, args: I) -> Result<Invocation, clap::Error>` (`I: IntoIterator<Item = T>, T: Into<OsString> + Clone`), `pub async fn run(&self, run: CliRun, env: &Env, out: &mut (dyn Write + Send), err: &mut (dyn Write + Send)) -> i32`.
   - `pub enum Invocation { Tui, Serve, Cli(CliRun) }`; `pub struct CliRun { .. }` (opaco: o subcomando escolhido e `json`).
   - `pub fn usage_exit(e: &clap::Error) -> i32` (imprime com `e.print()`; `0` para ajuda/versão, `64` para o resto).
   - `render::render_default(v: &Value) -> String` (regras da tabela de decisões; objeto em ordem de chave, valores aninhados em JSON compacto).
   - Saídas fixas: sem serviço → stderr `Sem conexão com o serviço {app}: {detalhe}` e `2`; erro do app → stderr `erro: {message}` e `1` (com `--json`: stderr `{"error":{...}}`); `status` legível → para cada tópico, `<tópico>:` e as linhas do `render_default` com dois espaços na frente; `watch` legível → `<tópico> #<seq>` e as linhas indentadas, um bloco por estado, com `flush` a cada um.
 
-- [ ] **Passo 1: testes que falham.** Ajudante: `async fn service(dir) -> (Env, Topic, JoinHandle)` sobe um `ServerBuilder::new("demo", "0.1.0")` com tópico `counter` e métodos `counter.add` e `app.fail` em `<dir>/run/lucerna/demo.sock`, e devolve `Env { xdg_runtime_dir: Some(<dir>/run), home: Some(<dir>), .. }`. `fn app() -> CliApp` declara `add <n>` (`value_parser!(i64)`, ajuda "Soma ao contador.") → `counter.add {"n": n}` com `render` `|v| format!("Contador: {}", v["value"])`, e `fail` → `app.fail`. `async fn run(args: &[&str], env) -> (i32, String, String)`.
+- [ ] **Passo 1: testes que falham.** Ajudante: `async fn service(dir) -> (Env, Topic, JoinHandle)` sobe um `ServerBuilder::new("demo", "0.1.0")` com tópico `counter` e métodos `counter.add` e `app.fail` em `<dir>/run/lucerna/demo.sock`, e devolve `Env { xdg_runtime_dir: Some(<dir>/run), home: Some(<dir>), .. }`. `fn app() -> CliApp` (`CliApp::new("demo", "demo", "0.1.0", "Demonstração.")`) declara `add <n>` (`value_parser!(i64)`, ajuda "Soma ao contador.") → `counter.add {"n": n}` com `render` `|v| format!("Contador: {}", v["value"])`, e `fail` → `app.fail`. `async fn run(args: &[&str], env) -> (i32, String, String)`.
 
 ```rust
 #[test]
@@ -1038,7 +1068,12 @@ fn parse_dispatch() {
     let e = a.parse_from(["demo", "add", "três"]).unwrap_err();
     assert_eq!(usage_exit(&e), 64);
     assert_eq!(usage_exit(&a.parse_from(["demo", "--help"]).unwrap_err()), 0);
-    assert!(!a.clap().render_help().to_string().contains("serve"));
+    assert_eq!(usage_exit(&a.parse_from(["demo", "--version"]).unwrap_err()), 0);
+    assert!(matches!(a.parse_from(["demo", "add", "-3"]).unwrap(), Invocation::Cli(_)));
+    let help = a.clap().render_help().to_string();
+    assert!(!help.contains("serve"));
+    assert!(help.contains("Uso:") && help.contains("Comandos") && help.contains("Mostra esta ajuda."));
+    assert!(!help.contains("Usage:") && !help.contains("Print help"));
 }
 
 #[tokio::test]
@@ -1096,11 +1131,11 @@ fn render_default_rules() {
 - Test: `apps/lucerna-hello/tests/{protocol,shell,files}.rs`
 
 **Interfaces:**
-- Consumes: `lucerna_service::{ServiceBuilder, Shell, testing::FakeShell}`, `lucerna_cli::*`, `lucerna_manifest::Manifest`, `lucerna_ipc::{Client, raw::RawConn}`.
+- Consumes: `lucerna_service::{ServiceBuilder, Shell, testing::FakeShell}`, `lucerna_cli::*`, `lucerna_manifest::Manifest`, `lucerna_ipc::{Client, Topic, raw::RawConn}`.
 - Produces:
   - `pub const APP: &str = "hello";`
   - `pub struct Hello { pub service: ServiceBuilder, pub counter: Topic, pub ticks: Topic }` e `pub fn hello() -> Hello` (chamado dentro do runtime: faz `tokio::spawn` do produtor de `ticks`) — tópico `counter` `{"value":0}`; stream `ticks`: uma tarefa que espera `wait_subscribed`, publica `{"tick":k,"bands":[64 × f32]}` a cada 1 ms (`MissedTickBehavior::Skip`) enquanto `subscribers() > 0`; métodos `counter.add {"n": i64}` (sem `n` inteiro → `-32602`; estouro → `RpcError::app(1, "O contador passou do limite.")`; publica e devolve `{"value":v}`), `counter.reset` (→ `{"value":0}`), `quiet.set {"on": bool}` (`dnd_request("Lucerna Hello")` / `dnd_release()`, devolve `{}`). Toda mudança do contador: valor ≠ 0 → `shell.bar_set(BarItem { id: "counter", icon: "exposure_plus_1", text: Some(v.to_string()), ends_at: None, panel: false })`; valor 0 → `bar_clear("counter")`.
-  - `pub fn cli() -> CliApp` — `add <n>` (`counter.add`, "Soma n ao contador.", `render` → `Contador: {v}`), `reset` (`counter.reset`, "Zera o contador.", mesmo `render`), `quiet <on|off>` (`quiet.set {"on": arg == "on"}`, `value_parser(["on", "off"])`, "Liga ou desliga o não perturbe.").
+  - `pub fn cli() -> CliApp` (`CliApp::new(APP, "lucerna-hello", env!("CARGO_PKG_VERSION"), "Exemplo do Lucerna: um contador.")`) — `add <n>` (`counter.add`, "Soma n ao contador.", `render` → `Contador: {v}`), `reset` (`counter.reset`, "Zera o contador.", mesmo `render`), `quiet <on|off>` (`quiet.set {"on": arg == "on"}`, `value_parser(["on", "off"])`, "Liga ou desliga o não perturbe.").
   - Unidades:
 
 ```ini
@@ -1165,14 +1200,18 @@ async fn slow_client_on_a_stream() {
     let mut c = r.raw().await;
     c.send(&json!({"jsonrpc":"2.0","id":1,"method":"lucerna.subscribe","params":{"topics":["ticks"]}})).await.unwrap();
     tokio::time::sleep(Duration::from_secs(2)).await; // não lê: ~2000 quadros produzidos
+    // para a produção antes de esvaziar: o laço termina na resposta do unsubscribe
+    c.send(&json!({"jsonrpc":"2.0","id":2,"method":"lucerna.unsubscribe","params":{"topics":["ticks"]}})).await.unwrap();
     let mut ticks = vec![];
-    while let Ok(Ok(Some(v))) = tokio::time::timeout(Duration::from_millis(200), c.recv()).await {
+    loop {
+        let v = c.recv().await.unwrap().expect("conexão aberta"); // recv desiste em 5 s
+        if v["id"] == 2 { assert_eq!(v["result"], json!({})); break; }
         if v["method"] == "lucerna.state" { ticks.push(v["params"]["data"]["tick"].as_u64().unwrap()); }
+        assert!(ticks.len() < 5000, "fila sem limite");
     }
     assert!(ticks.windows(2).all(|w| w[0] < w[1]));
     assert!(ticks.windows(2).any(|w| w[1] - w[0] > 1), "houve descarte de quadros intermediários");
     // o produtor para sem assinante
-    drop(c);
     tokio::time::timeout(Duration::from_secs(1), r.ticks().wait_unsubscribed()).await.unwrap();
 }
 
@@ -1217,9 +1256,9 @@ async fn works_without_a_shell() { /* start(Some(caminho inexistente)); add 1 �
 
 **Interfaces:**
 - Consumes: `lucerna_hello::{hello, cli}`, `lucerna_cli::{Invocation, usage_exit}`, `lucerna_paths::Env`.
-- Produces: o binário `lucerna-hello`. `main` (`#[tokio::main]`, devolve `ExitCode`): `Tui` → imprime a ajuda (`cli().clap().print_help()`) e `0`; `Serve` → `hello().service.run()`, erro → `erro: {e}` no stderr e `1`; `Cli(run)` → `cli().run(run, &Env::from_process(), stdout, stderr)`; erro de uso → `usage_exit`.
+- Produces: o binário `lucerna-hello`. `main` (`#[tokio::main]`, devolve `ExitCode`): cria `let cli = cli();` uma vez e faz `cli.parse_from(std::env::args_os())`: `Tui` → `cli.clap().print_help()` e `0`; `Serve` → `hello().service.run()`, erro → `erro: {e}` no stderr e `1`; `Cli(run)` → `cli.run(run, &Env::from_process(), stdout, stderr)`; erro de uso → `usage_exit`.
 
-Ajudante dos testes: `fn hello(dir: &Path) -> Command` = `Command::new(env!("CARGO_BIN_EXE_lucerna-hello"))` com `env_clear()`, `HOME=<dir>`, `XDG_RUNTIME_DIR=<dir>/run` e `PATH` do processo; `fn serve(dir, idle_ms) -> Child` acrescenta `LUCERNA_IDLE_TIMEOUT_MS` e espera o socket `<dir>/run/lucerna/hello.sock` existir (até 5 s).
+Ajudante dos testes: `fn hello(dir: &Path) -> Command` = `Command::new(env!("CARGO_BIN_EXE_lucerna-hello"))` com `env_clear()`, `HOME=<dir>`, `XDG_RUNTIME_DIR=<dir>/run` e `PATH` do processo; `fn serve(dir, idle_ms) -> Serve` acrescenta `LUCERNA_IDLE_TIMEOUT_MS`, espera o socket `<dir>/run/lucerna/hello.sock` existir (até 5 s) e devolve `struct Serve(Child)` — um guarda com `Drop` que faz `kill` + `wait` se o processo ainda estiver vivo, para nenhum `serve` sobrar quando um teste entra em pânico (`Serve::child(&mut self) -> &mut Child`). O mesmo guarda envolve o processo do `watch`.
 
 - [ ] **Passo 1: testes que falham.**
 
@@ -1230,7 +1269,7 @@ fn cli_json_and_exit_codes() {
     let out = hello(t.path()).args(["status"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));                   // ainda sem serviço
     assert!(String::from_utf8_lossy(&out.stderr).starts_with("Sem conexão com o serviço hello"));
-    let mut srv = serve(t.path(), 60_000);
+    let _srv = serve(t.path(), 60_000);
     let out = hello(t.path()).args(["add", "3"]).output().unwrap();
     assert_eq!((out.status.code(), String::from_utf8(out.stdout).unwrap()), (Some(0), "Contador: 3\n".into()));
     let out = hello(t.path()).args(["--json", "status"]).output().unwrap();
@@ -1242,7 +1281,7 @@ fn cli_json_and_exit_codes() {
     assert_eq!(String::from_utf8(out.stderr).unwrap(), "erro: O contador passou do limite.\n");
     assert_eq!(hello(t.path()).args(["add", "três"]).output().unwrap().status.code(), Some(64));
     assert_eq!(hello(t.path()).output().unwrap().status.code(), Some(0)); // sem TUI: ajuda
-    srv.kill().unwrap();
+    assert_eq!(hello(t.path()).arg("--version").output().unwrap().status.code(), Some(0));
 }
 
 #[test]
@@ -1254,18 +1293,18 @@ fn watch_prints_json_lines() {
 #[test]
 fn idle_exit() {
     let t = tempfile::tempdir().unwrap();
-    let mut srv = serve(t.path(), 300);
-    let mut watch = hello(t.path()).args(["watch", "counter"]).stdout(Stdio::null()).spawn().unwrap();
-    std::thread::sleep(Duration::from_millis(800));
-    assert!(srv.try_wait().unwrap().is_none(), "com cliente conectado não sai");
-    watch.kill().unwrap(); watch.wait().unwrap();
-    assert!(wait_exit(&mut srv, Duration::from_secs(3)).unwrap().success(), "sai sozinho e com 0");
+    let mut srv = serve(t.path(), 200);
+    let watch = Serve(hello(t.path()).args(["watch", "counter"]).stdout(Stdio::null()).spawn().unwrap());
+    std::thread::sleep(Duration::from_millis(500)); // > 2× a ociosidade
+    assert!(srv.child().try_wait().unwrap().is_none(), "com cliente conectado não sai");
+    drop(watch); // kill + wait
+    assert!(wait_exit(srv.child(), Duration::from_secs(2)).unwrap().success(), "sai sozinho e com 0");
     assert!(!t.path().join("run/lucerna/hello.sock").exists(), "o socket manual é apagado");
 }
 
 #[test]
 fn bar_item_holds_the_service_even_without_shell() {
-    // serve com idle 300 ms; add 1 → espera 1 s → ainda vivo; reset → sai em até 3 s.
+    // serve com idle 200 ms; add 1 → espera 500 ms → ainda vivo; reset → sai em até 2 s (o teste inteiro fica perto de 1,5 s).
 }
 
 #[test]
@@ -1274,7 +1313,7 @@ fn second_serve_is_refused() {
 }
 ```
 
-`wait_exit(child, limite) -> Option<ExitStatus>` é um laço de `try_wait` a cada 20 ms.
+`wait_exit(child: &mut Child, limite: Duration) -> Option<ExitStatus>` é um laço de `try_wait` a cada 20 ms. Cada teste de ociosidade fica perto de 1,5 s.
 
 - [ ] **Passo 2: rodar e ver falhar.** `cargo test -p lucerna-hello --test process` → falham (o `main` ainda é vazio).
 - [ ] **Passo 3: implementar** o `main.rs` como nas Interfaces.
@@ -1339,7 +1378,9 @@ Verificação: `gh api repos/lucerna-desktop/lucerna-sdk/rulesets/25353655 --jq 
 
 ## Autorrevisão
 
-- **Cobertura do spec:** transporte, enquadramento e limite (T4, T5); JSON-RPC, nomes e reservados (T1); aperto de mão, `-32010`, `-32011` (T1, T5, T11); pedidos (T5, T6, T11); assinaturas, retrato, `seq`, coalescência, contínuos só com assinante, `unsubscribe`, fechar desfaz (T5, T11); erros e mensagens em português (T1); `shell.sock`, seis métodos, posse pela conexão, sem shell, reconexão com espera até 5 s, item na barra como trabalho pendente (T8, T11); notificações pelo D-Bus — fora do SDK, nada a fazer; manifesto, `schema`, `api`, exemplos compartilhados (T3); três versões (T1, T3; a doc do crate diz a versão do protocolo); ativação pelo socket e socket manual (T7, T12); ociosidade 60 s configurável (T7, T12); timer agendado que sobrevive ao reinício (T9); binário único com `serve`, CLI com `--json`, `status`, `watch` e códigos (T10, T12); pastas (T2); `lucerna-hello` sem painel com unidades e manifesto (T11, T12); testes de integração listados no spec (T11, T12); CI e ruleset (T13). Publicação no crates.io: fora deste plano (os `Cargo.toml` já têm os metadados; publicar é decisão do usuário).
-- **Tipos consistentes:** `State`, `BarItem`, `HelloResult`, `Topic`, `ServerBuilder::method`, `Client::connect(path, client, app)`, `WorkTracker`, `Shell::spawn`, `FakeShell`, `CliApp::run`, `EXIT_*` conferidos entre as Interfaces e os testes das tarefas seguintes.
+- **Cobertura do spec:** transporte, enquadramento e limite (T4, T5); JSON-RPC, nomes e reservados (T1); aperto de mão, `-32010`, `-32011` (T1, T5, T11); pedidos (T5, T6, T11); assinaturas, retrato, `seq`, coalescência, contínuos só com assinante, `unsubscribe`, fechar desfaz (T5, T11); erros e mensagens em português (T1); `shell.sock`, seis métodos, posse pela conexão, sem shell, reconexão com espera até 5 s, item na barra como trabalho pendente (T8, T11); notificações pelo D-Bus — fora do SDK, nada a fazer; manifesto, `schema`, `api`, exemplos compartilhados (T3); três versões (T1, T3; a doc do crate diz a versão do protocolo); ativação pelo socket e socket manual (T7, T12); ociosidade 60 s configurável (T7, T12); timer agendado que sobrevive ao reinício (T9); binário único com `serve`, CLI com `--json`, `status`, `watch` e códigos (T10, T12); pastas (T2); `lucerna-hello` sem painel com unidades e manifesto (T11, T12); testes de integração listados no spec (T11, T12); CI e ruleset (T13). Publicação no crates.io: fora deste plano (os `Cargo.toml` têm os metadados da Tarefa 1; publicar é decisão do usuário). As três decisões que mudam o contrato (saída `64`, `quiet.set`, `seq` a partir de `0` e zerado no reinício) foram registradas também no spec.
+- **Tipos consistentes:** `State`, `BarItem`, `HelloResult`, `Topic`, `ServerBuilder::method`, `Client::connect(path, client, app)`, `WorkTracker`, `Shell::spawn`, `FakeShell`, `CliApp::new(app, bin, version, about)`, `CliApp::run`, `Hello`, `Serve`, `EXIT_*` conferidos entre as Interfaces e os testes das tarefas seguintes.
+- **Lints e metadados:** `missing_docs` só nos seis crates publicados (`#![warn(missing_docs)]` no `lib.rs`), não no workspace, para não quebrar a lib do `lucerna-hello` com `-D warnings`; `description`, `readme`, `keywords`, `categories` e `homepage` definidos; o `lucerna-hello` não é publicado.
+- **Testes que terminam:** nenhum laço de leitura depende de silêncio num tópico contínuo (o `slow_client_on_a_stream` para no `unsubscribe`); processos filhos dos testes ficam atrás do guarda `Serve`.
 - **Review Focus:** os cinco itens têm teste na tarefa dona (T5 ×2, T7, T2/T10, T8).
 - **Proporção:** o plano tem cerca de 6× o tamanho do spec, quase tudo em testes (pedidos como código) e assinaturas; os corpos ficam com o implementador, e os testes vizinhos de um mesmo molde aparecem com a entrada e as asserções em comentário em vez de repetidos por extenso.
