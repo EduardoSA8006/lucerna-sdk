@@ -1,24 +1,24 @@
 # Ecossistema Lucerna
 
-Este documento descreve como os repositórios em Rust se encaixam no [Lucerna](https://github.com/EduardoSA8006/lucerna). Ele só registra o que já foi decidido; o que falta definir está em "Em aberto".
+Este documento descreve como os repositórios em Rust se encaixam no [Lucerna](https://github.com/lucerna-desktop/lucerna-shell). Ele só registra o que já foi decidido; o que falta definir está em "Em aberto".
 
 ## Repositórios
 
-Um repositório por produto, mais o `lucerna-sdk` como base comum. Todos têm as mesmas configurações do `lucerna`: licença GPL-3.0, branch `main` protegida por ruleset, merge só por merge commit, PR obrigatório e padrão de commits em português.
+Um repositório por produto, mais o `lucerna-sdk` como base comum. Todos têm as mesmas configurações do `lucerna-shell`: licença GPL-3.0, branch `main` protegida por ruleset, merge só por merge commit, PR obrigatório e padrão de commits em português.
 
 | Repositório | Papel |
 |---|---|
-| [`lucerna`](https://github.com/EduardoSA8006/lucerna) | O shell, em Quickshell (QML). Só a interface. |
-| [`lucerna-sdk`](https://github.com/EduardoSA8006/lucerna-sdk) | Base comum: o protocolo de conversa com o shell e o manifesto dos apps. |
-| [`lucernad`](https://github.com/EduardoSA8006/lucernad) | Daemon com a lógica do shell (espectro, sistema, área de transferência e mais). |
-| [`lucerna-phone`](https://github.com/EduardoSA8006/lucerna-phone) | Gerenciador de celulares. |
-| [`lucerna-phone-android`](https://github.com/EduardoSA8006/lucerna-phone-android) | App Android do `lucerna-phone`. |
-| [`lucerna-routine`](https://github.com/EduardoSA8006/lucerna-routine) | Gerenciador de rotina. |
-| [`lucerna-notes`](https://github.com/EduardoSA8006/lucerna-notes) | Bloco de notas. |
+| [`lucerna-shell`](https://github.com/lucerna-desktop/lucerna-shell) | O shell, em Quickshell (QML). Só a interface. |
+| [`lucerna-sdk`](https://github.com/lucerna-desktop/lucerna-sdk) | Base comum: o protocolo de conversa com o shell e o manifesto dos apps. |
+| [`lucernad`](https://github.com/lucerna-desktop/lucernad) | Daemon com a lógica do shell (espectro, sistema, área de transferência e mais). |
+| [`lucerna-phone`](https://github.com/lucerna-desktop/lucerna-phone) | Gerenciador de celulares. |
+| [`lucerna-phone-android`](https://github.com/lucerna-desktop/lucerna-phone-android) | App Android do `lucerna-phone`. |
+| [`lucerna-routine`](https://github.com/lucerna-desktop/lucerna-routine) | Gerenciador de rotina. |
+| [`lucerna-notes`](https://github.com/lucerna-desktop/lucerna-notes) | Bloco de notas. |
 
 ## O shell é só a interface
 
-O `lucerna` (Quickshell/QML) cuida da interface: painéis, temas, animações e as APIs nativas do Quickshell. A lógica fica em Rust, nos outros repositórios.
+O `lucerna-shell` (Quickshell/QML) cuida da interface: painéis, temas, animações e as APIs nativas do Quickshell. A lógica fica em Rust, nos outros repositórios.
 
 ## Estrutura de cada app
 
