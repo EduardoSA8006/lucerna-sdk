@@ -41,6 +41,8 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Nomes que o [`CliApp`] declara sozinho.
 const RESERVED: [&str; 3] = ["status", "watch", "serve"];
+/// Ids e opções longas de argumento que o [`CliApp`] declara sozinho.
+const RESERVED_ARGS: [&str; 3] = ["help", "json", "version"];
 
 const TEMPLATE: &str = "{about}\n\nUso: {usage}\n\n{all-args}";
 
@@ -54,6 +56,15 @@ pub struct Call {
 }
 
 /// Um subcomando do app.
+///
+/// Nomes reservados ao [`CliApp`]: o subcomando (nome e aliases) não pode ser
+/// `status`, `watch`, `serve` nem repetir outro subcomando do app; os
+/// argumentos não podem usar os ids nem as opções longas `help`, `json` e
+/// `version`, nem a opção curta `-h`. [`CliApp::command`] entra em pânico com
+/// uma mensagem clara em qualquer desses casos.
+///
+/// O uso (`Uso:` da ajuda) é gerado em português pelo [`CliApp`]
+/// (`{bin} {sub} [OPÇÕES] <arg>…`) e substitui um `override_usage` do app.
 pub struct CliCommand {
     /// O subcomando do clap: nome, ajuda em português e argumentos.
     pub command: Command,
@@ -115,17 +126,39 @@ impl CliApp {
 
     /// Acrescenta um subcomando do app.
     ///
-    /// Entra em pânico com nome `status`, `watch`, `serve` ou repetido.
+    /// Entra em pânico com nome ou alias `status`, `watch`, `serve` ou
+    /// repetido, e com argumento `help`, `json`, `version` ou `-h` (veja
+    /// [`CliCommand`]).
     pub fn command(mut self, c: CliCommand) -> Self {
         let name = c.command.get_name();
-        assert!(
-            !RESERVED.contains(&name),
-            "o subcomando {name:?} é declarado pelo lucerna-cli"
-        );
-        assert!(
-            self.commands.iter().all(|o| o.command.get_name() != name),
-            "subcomando repetido: {name:?}"
-        );
+        let names = |c: &Command| -> Vec<String> {
+            std::iter::once(c.get_name())
+                .chain(c.get_all_aliases())
+                .map(str::to_string)
+                .collect()
+        };
+        for n in names(&c.command) {
+            assert!(
+                !RESERVED.contains(&n.as_str()),
+                "o subcomando {name:?} usa o nome {n:?}, declarado pelo lucerna-cli"
+            );
+            assert!(
+                self.commands
+                    .iter()
+                    .all(|o| !names(&o.command).contains(&n)),
+                "subcomando repetido: {name:?} (nome ou alias {n:?})"
+            );
+        }
+        for a in c.command.get_arguments() {
+            let id = a.get_id().as_str();
+            assert!(
+                !RESERVED_ARGS.contains(&id)
+                    && !a.get_long().is_some_and(|l| RESERVED_ARGS.contains(&l))
+                    && a.get_short() != Some('h'),
+                "o argumento {id:?} do subcomando {name:?} colide com help, json, version ou -h, \
+                 declarados pelo lucerna-cli"
+            );
+        }
         self.commands.push(c);
         self
     }
@@ -135,8 +168,7 @@ impl CliApp {
     pub fn clap(&self) -> Command {
         let mut root = Command::new(self.bin.clone())
             .version(self.version.clone())
-            .about(self.about.clone())
-            .override_usage(format!("{} [OPÇÕES] [COMANDO]", self.bin));
+            .about(self.about.clone());
         for c in &self.commands {
             root = root.subcommand(c.command.clone());
         }
@@ -153,7 +185,7 @@ impl CliApp {
                     ),
             )
             .subcommand(Command::new("serve").about("Roda o serviço.").hide(true));
-        localize(root)
+        localize(root, &self.bin)
             .arg(
                 Arg::new("version")
                     .short('V')
@@ -206,6 +238,11 @@ impl CliApp {
 
     /// Conecta ao serviço (`client` = `cli`), roda o subcomando e devolve o
     /// código de saída. O resultado vai para `out`, as mensagens de erro para `err`.
+    ///
+    /// Com `--json`, todo erro sai em `err` como uma linha JSON e `out` fica vazio:
+    /// erro do app (código `1`) como `{"error":{"code","message","data"?}}`; sem
+    /// serviço (código `2`) como `{"error":{"message":"Sem conexão com o serviço …"}}`,
+    /// sem `code` (não há erro JSON-RPC; o código de saída distingue).
     pub async fn run(
         &self,
         run: CliRun,
@@ -215,7 +252,7 @@ impl CliApp {
     ) -> i32 {
         let path = match AppPaths::new(&self.app, env).and_then(|p| p.socket()) {
             Ok(p) => p,
-            Err(e) => return self.no_service(err, &e.to_string()),
+            Err(e) => return self.no_service(err, &e.to_string(), run.json),
         };
         let client = match Client::connect_timeout(&path, "cli", &self.app, CONNECT_TIMEOUT).await {
             Ok(c) => c,
@@ -308,12 +345,18 @@ impl CliApp {
                 return EXIT_OK;
             }
         }
-        self.no_service(err, "o serviço fechou a conexão.")
+        self.no_service(err, "o serviço fechou a conexão.", json)
     }
 
     /// Mensagem de "sem serviço" e o código `2`.
-    fn no_service(&self, err: &mut (dyn Write + Send), detail: &str) -> i32 {
-        let _ = writeln!(err, "Sem conexão com o serviço {}: {detail}", self.app);
+    fn no_service(&self, err: &mut (dyn Write + Send), detail: &str, json: bool) -> i32 {
+        let message = format!("Sem conexão com o serviço {}: {detail}", self.app);
+        if json {
+            let v = serde_json::json!({ "error": { "message": message } });
+            let _ = writeln!(err, "{v}");
+        } else {
+            let _ = writeln!(err, "{message}");
+        }
         let _ = err.flush();
         EXIT_NO_SERVICE
     }
@@ -348,19 +391,26 @@ impl CliApp {
                     }
                     _ => format!("{io}."),
                 };
-                self.no_service(err, &detail)
+                self.no_service(err, &detail, json)
             }
-            ClientError::Io(io) => self.no_service(err, &format!("erro de comunicação: {io}.")),
-            ClientError::Closed => self.no_service(err, "o serviço fechou a conexão."),
-            ClientError::Timeout => self.no_service(err, "tempo esgotado."),
+            ClientError::Io(io) => {
+                self.no_service(err, &format!("erro de comunicação: {io}."), json)
+            }
+            ClientError::Closed => self.no_service(err, "o serviço fechou a conexão.", json),
+            ClientError::Timeout => self.no_service(err, "tempo esgotado.", json),
             // No aperto de mão (versão incompatível, socket de outro app): não
             // dá para falar com este serviço.
             ClientError::Rpc(e) if matches!(stage, Stage::Connect(_)) => {
-                self.no_service(err, &e.message)
+                self.no_service(err, &e.message, json)
             }
             ClientError::Rpc(e) => self.app_error(err, &e, json),
-            // O serviço existe e respondeu, mas fora da forma do protocolo:
-            // não é "sem serviço".
+            // Um `hello` fora da forma do protocolo: o que atende o socket não é
+            // um serviço do Lucerna com que dê para falar.
+            ClientError::Decode(d) if matches!(stage, Stage::Connect(_)) => {
+                self.no_service(err, &format!("resposta inválida do serviço: {d}."), json)
+            }
+            // Numa chamada, o serviço falou e respondeu fora da forma esperada:
+            // erro do app, não "sem serviço".
             ClientError::Decode(d) => self.app_error(
                 err,
                 &RpcError {
@@ -395,9 +445,38 @@ fn indented(v: &Value) -> String {
     text.lines().map(|l| format!("  {l}\n")).collect()
 }
 
-/// Ajuda em português num comando e nos subcomandos dele.
-fn localize(c: Command) -> Command {
-    c.help_template(TEMPLATE)
+/// O uso em português de `c`, chamado como `path` (`{bin} {sub} …`).
+fn usage(c: &Command, path: &str) -> String {
+    let mut u = format!("{path} [OPÇÕES]");
+    for a in c.get_positionals().filter(|a| !a.is_hide_set()) {
+        let name = a
+            .get_value_names()
+            .and_then(|v| v.first())
+            .map_or_else(|| a.get_id().to_string(), |n| n.to_string());
+        let many = a.get_num_args().is_some_and(|r| r.max_values() > 1)
+            || matches!(a.get_action(), ArgAction::Append);
+        let dots = if many { "..." } else { "" };
+        if a.is_required_set() {
+            u.push_str(&format!(" <{name}>{dots}"));
+        } else {
+            u.push_str(&format!(" [{name}]{dots}"));
+        }
+    }
+    if c.has_subcommands() {
+        u.push_str(if c.is_subcommand_required_set() {
+            " <COMANDO>"
+        } else {
+            " [COMANDO]"
+        });
+    }
+    u
+}
+
+/// Ajuda em português num comando (chamado como `path`) e nos subcomandos dele.
+fn localize(c: Command, path: &str) -> Command {
+    let u = usage(&c, path);
+    c.override_usage(u)
+        .help_template(TEMPLATE)
         .disable_help_flag(true)
         .disable_version_flag(true)
         .disable_help_subcommand(true)
@@ -421,15 +500,120 @@ fn localize(c: Command) -> Command {
                 .action(ArgAction::Help)
                 .help("Mostra esta ajuda."),
         )
-        .mut_subcommands(localize)
+        .mut_subcommands(|s| {
+            let sub = format!("{path} {}", s.get_name());
+            localize(s, &sub)
+        })
 }
 
 /// Imprime o erro do clap (ajuda, versão ou uso errado) e devolve o código de
 /// saída: `0` para `--help`/`--version`, [`EXIT_USAGE`] para o resto.
+///
+/// Os erros mais comuns (valor inválido, argumento faltando, subcomando ou
+/// argumento desconhecido) saem em português; os outros ficam como o clap
+/// os escreve.
 pub fn usage_exit(e: &clap::Error) -> i32 {
-    let _ = e.print();
     match e.kind() {
-        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => EXIT_OK,
-        _ => EXIT_USAGE,
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+            let _ = e.print();
+            EXIT_OK
+        }
+        _ => {
+            match translate(e) {
+                Some(text) => eprint!("{text}"),
+                None => {
+                    let _ = e.print();
+                }
+            }
+            EXIT_USAGE
+        }
+    }
+}
+
+/// O erro do clap em português, com o uso e a dica do `--help`; `None` para os
+/// tipos que não traduzimos.
+fn translate(e: &clap::Error) -> Option<String> {
+    use clap::error::ContextKind as K;
+    let get = |k| e.get(k).map(|v| v.to_string()).unwrap_or_default();
+    let msg = match e.kind() {
+        ErrorKind::InvalidValue | ErrorKind::ValueValidation => {
+            let mut m = format!(
+                "valor inválido '{}' para '{}'",
+                get(K::InvalidValue),
+                get(K::InvalidArg)
+            );
+            // O motivo vem do `value_parser` (em inglês nos tipos padrão).
+            if let Some(src) = std::error::Error::source(e) {
+                m.push_str(&format!(": {src}"));
+            }
+            m
+        }
+        ErrorKind::MissingRequiredArgument => {
+            format!("faltam argumentos obrigatórios: {}", get(K::InvalidArg))
+        }
+        ErrorKind::InvalidSubcommand => {
+            format!("subcomando desconhecido '{}'", get(K::InvalidSubcommand))
+        }
+        ErrorKind::UnknownArgument => format!("argumento inesperado '{}'", get(K::InvalidArg)),
+        _ => return None,
+    };
+    let mut text = format!("erro: {msg}\n\n");
+    if let Some(u) = e.get(K::Usage) {
+        text.push_str(&u.to_string().replacen("Usage:", "Uso:", 1));
+        text.push_str("\n\n");
+    }
+    text.push_str("Para mais informações, use '--help'.\n");
+    Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> CliApp {
+        CliApp::new("demo", "demo", "0.1.0", "Demonstração.").command(CliCommand {
+            command: Command::new("add").arg(
+                Arg::new("n")
+                    .required(true)
+                    .value_parser(clap::value_parser!(i64)),
+            ),
+            to_call: |_| Call {
+                method: "counter.add".into(),
+                params: None,
+            },
+            render: None,
+        })
+    }
+
+    fn err_text(args: &[&str]) -> String {
+        translate(&app().parse_from(args).unwrap_err()).expect("erro traduzido")
+    }
+
+    #[test]
+    fn common_clap_errors_are_portuguese() {
+        let t = err_text(&["demo", "add", "três"]);
+        assert!(
+            t.starts_with("erro: valor inválido 'três' para '<n>'"),
+            "{t}"
+        );
+        assert!(t.ends_with("Para mais informações, use '--help'.\n"), "{t}");
+        let t = err_text(&["demo", "add"]);
+        assert!(
+            t.starts_with("erro: faltam argumentos obrigatórios: <n>"),
+            "{t}"
+        );
+        // O clap só anexa o uso a alguns erros; quando anexa, sai em português.
+        assert!(t.contains("Uso: demo add [OPÇÕES] <n>"), "{t}");
+        let t = err_text(&["demo", "xyz"]);
+        assert!(t.starts_with("erro: subcomando desconhecido 'xyz'"), "{t}");
+        let t = err_text(&["demo", "add", "1", "--nada"]);
+        assert!(t.starts_with("erro: argumento inesperado '--nada'"), "{t}");
+        for t in [
+            err_text(&["demo", "add"]),
+            err_text(&["demo", "xyz"]),
+            err_text(&["demo", "add", "1", "--nada"]),
+        ] {
+            assert!(!t.contains("Usage:") && !t.contains("For more"), "{t}");
+        }
     }
 }

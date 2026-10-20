@@ -194,8 +194,64 @@ fn subcommand_help_is_portuguese_too() {
         !help.contains("Usage:") && !help.contains("Print help"),
         "{help}"
     );
+    assert!(help.contains("Uso: demo add [OPÇÕES] <n>"), "{help}");
+    assert!(!help.contains("[OPTIONS]"), "{help}");
     let e = app().parse_from(["demo", "add", "--help"]).unwrap_err();
     assert_eq!(usage_exit(&e), 0);
+}
+
+fn noop(_: &clap::ArgMatches) -> Call {
+    Call {
+        method: "x".into(),
+        params: None,
+    }
+}
+
+#[test]
+#[should_panic(expected = "watch")]
+fn reserved_alias_panics() {
+    let _ = app().command(CliCommand {
+        command: Command::new("seguir").alias("watch"),
+        to_call: noop,
+        render: None,
+    });
+}
+
+#[test]
+#[should_panic(expected = "repetido")]
+fn alias_repeating_a_command_panics() {
+    let _ = app().command(CliCommand {
+        command: Command::new("somar").alias("add"),
+        to_call: noop,
+        render: None,
+    });
+}
+
+#[test]
+fn reserved_argument_ids_panic() {
+    for arg in [
+        Arg::new("json").long("saida"),
+        Arg::new("saida").long("help"),
+        Arg::new("version"),
+        Arg::new("hora").short('h'),
+    ] {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app().command(CliCommand {
+                command: Command::new("outro").arg(arg),
+                to_call: noop,
+                render: None,
+            })
+        }));
+        let msg = *r
+            .err()
+            .expect("devia entrar em pânico")
+            .downcast::<String>()
+            .unwrap();
+        assert!(
+            msg.contains("colide com help, json, version ou -h"),
+            "{msg}"
+        );
+    }
 }
 
 #[test]
@@ -272,6 +328,14 @@ async fn no_service_exits_2() {
     assert_eq!(code, 2);
     assert_eq!(out, "");
     assert!(err.starts_with("Sem conexão com o serviço demo"), "{err}");
+
+    // Com `--json`, o "sem serviço" também sai em JSON, para scripts.
+    let (code, out, err) = run(&["demo", "--json", "status"], &env).await;
+    assert_eq!((code, out.as_str()), (2, ""));
+    let v: Value = serde_json::from_str(&err).unwrap();
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(msg.starts_with("Sem conexão com o serviço demo"), "{msg}");
+    assert!(v["error"].get("code").is_none(), "{v}");
 
     // Review Focus 4: sem XDG_RUNTIME_DIR, erro claro (nunca /tmp).
     let env = Env {
@@ -364,20 +428,28 @@ async fn silent_service(dir: &Path) -> Env {
 
 /// Serviço falso que responde o `hello` com `hello_result` e ignora o resto.
 async fn fake_hello_service(dir: &Path, hello_result: Value) -> Env {
+    fake_service(dir, hello_result, None).await
+}
+
+/// Serviço falso: responde o `hello` com `hello_result` e os pedidos seguintes
+/// com `later` (ou não responde, com `None`).
+async fn fake_service(dir: &Path, hello_result: Value, later: Option<Value>) -> Env {
     let env = env_in(dir);
     let listener = UnixListener::bind(socket(dir)).unwrap();
     tokio::spawn(async move {
         while let Ok((s, _)) = listener.accept().await {
             let result = hello_result.clone();
+            let later = later.clone();
             tokio::spawn(async move {
                 let (rd, mut wr) = s.into_split();
                 let mut lines = BufReader::new(rd).lines();
                 let mut first = true;
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if first {
-                        first = false;
+                    let answer = if first { Some(&result) } else { later.as_ref() };
+                    first = false;
+                    if let Some(answer) = answer {
                         let req: Value = serde_json::from_str(&line).unwrap();
-                        let resp = json!({"jsonrpc":"2.0","id":req["id"],"result":result});
+                        let resp = json!({"jsonrpc":"2.0","id":req["id"],"result":answer});
                         let mut bytes = resp.to_string().into_bytes();
                         bytes.push(b'\n');
                         wr.write_all(&bytes).await.unwrap();
@@ -397,7 +469,14 @@ fn good_hello() -> Value {
 async fn silent_service_times_out_with_2() {
     let t = tempfile::tempdir().unwrap();
     let env = silent_service(t.path()).await;
+    let start = tokio::time::Instant::now();
     let (code, out, err) = run(&["demo", "add", "1"], &env).await;
+    // Tempo virtual: o prazo do connect (5 s), não o da chamada (30 s).
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(5) && elapsed < Duration::from_secs(30),
+        "{elapsed:?}"
+    );
     assert_eq!(code, 2);
     assert_eq!(out, "");
     assert_eq!(err, "Sem conexão com o serviço demo: tempo esgotado.\n");
@@ -408,24 +487,42 @@ async fn unanswered_call_times_out_with_2() {
     let t = tempfile::tempdir().unwrap();
     let env = fake_hello_service(t.path(), good_hello()).await;
     for args in [&["demo", "add", "1"][..], &["demo", "status"][..]] {
+        let start = tokio::time::Instant::now();
         let (code, _, err) = run(args, &env).await;
+        // Tempo virtual: foi o prazo da chamada (30 s) que estourou.
+        let elapsed = start.elapsed();
+        assert!(elapsed >= Duration::from_secs(30), "{args:?}: {elapsed:?}");
         assert_eq!(code, 2, "{args:?}");
         assert_eq!(err, "Sem conexão com o serviço demo: tempo esgotado.\n");
     }
 }
 
 #[tokio::test]
-async fn malformed_hello_is_not_no_service() {
+async fn malformed_hello_is_no_service() {
     let t = tempfile::tempdir().unwrap();
     let env = fake_hello_service(t.path(), json!("oops")).await;
     let (code, out, err) = run(&["demo", "add", "1"], &env).await;
+    assert_eq!(code, 2, "{err}");
+    assert_eq!(out, "");
+    assert!(
+        err.starts_with("Sem conexão com o serviço demo: resposta inválida do serviço"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_reply_to_a_call_exits_1() {
+    let t = tempfile::tempdir().unwrap();
+    // O `hello` é bom; o `lucerna.subscribe` do `status` volta fora da forma.
+    let env = fake_service(t.path(), good_hello(), Some(json!("oops"))).await;
+    let (code, out, err) = run(&["demo", "status"], &env).await;
     assert_eq!(code, 1, "{err}");
     assert_eq!(out, "");
     assert!(
         err.starts_with("erro: Resposta inválida do serviço"),
         "{err}"
     );
-    let (code, _, err) = run(&["demo", "--json", "add", "1"], &env).await;
+    let (code, _, err) = run(&["demo", "--json", "status"], &env).await;
     assert_eq!(code, 1);
     let v: Value = serde_json::from_str(&err).unwrap();
     assert_eq!(v["error"]["code"], -32603);
