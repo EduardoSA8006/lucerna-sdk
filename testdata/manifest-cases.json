@@ -6,7 +6,10 @@
     {"panel": "1.10", "shell": "1.9", "load": false},
     {"panel": "1.9", "shell": "1.10", "load": true},
     {"panel": "2.0", "shell": "1.9", "load": false},
-    {"panel": "1.0", "shell": "2.0", "load": false}
+    {"panel": "1.0", "shell": "2.0", "load": false},
+    {"panel": "1.4", "shell": "1.4", "load": true},
+    {"panel": "0.1", "shell": "0.2", "load": true},
+    {"panel": "0.2", "shell": "0.1", "load": false}
   ],
   "manifests": [
     {"name": "completo (o do spec)", "valid": true, "manifest": {"schema": 1, "app": {"id": "routine", "name": "Rotina", "icon": "event_available", "socket": "routine.sock", "tui": "lucerna-routine"}, "panel": {"qml": "/usr/share/lucerna/panels/routine/Panel.qml", "api": "1.0"}, "card": {"qml": "/usr/share/lucerna/panels/routine/Card.qml"}, "shortcuts": {"panel": "SUPER+R"}}},
@@ -19,6 +22,21 @@
     {"name": "qml relativo", "valid": false, "error": "path", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "panel": {"qml": "Panel.qml", "api": "1.0"}}},
     {"name": "card sem painel", "valid": false, "error": "card-without-panel", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "card": {"qml": "/c/Card.qml"}}},
     {"name": "api malformada", "valid": false, "error": "json", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "panel": {"qml": "/p/Panel.qml", "api": "1"}}},
-    {"name": "sem app", "valid": false, "error": "json", "manifest": {"schema": 1}}
+    {"name": "sem app", "valid": false, "error": "json", "manifest": {"schema": 1}},
+    {"name": "socket com ..", "valid": false, "error": "socket", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "../a.sock"}}},
+    {"name": "socket com barra", "valid": false, "error": "socket", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a/b.sock"}}},
+    {"name": "id com 33 caracteres", "valid": false, "error": "app-id", "manifest": {"schema": 1, "app": {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "A", "icon": "x", "socket": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sock"}}},
+    {"name": "id com sublinhado", "valid": false, "error": "app-id", "manifest": {"schema": 1, "app": {"id": "a_b", "name": "A", "icon": "x", "socket": "a_b.sock"}}},
+    {"name": "id vazio", "valid": false, "error": "app-id", "manifest": {"schema": 1, "app": {"id": "", "name": "A", "icon": "x", "socket": ".sock"}}},
+    {"name": "id reservado (shell)", "valid": false, "error": "app-id", "manifest": {"schema": 1, "app": {"id": "shell", "name": "A", "icon": "x", "socket": "shell.sock"}}},
+    {"name": "ícone vazio", "valid": false, "error": "field", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "", "socket": "a.sock"}}},
+    {"name": "tui vazio", "valid": false, "error": "field", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock", "tui": ""}}},
+    {"name": "qml do card relativo", "valid": false, "error": "path", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "panel": {"qml": "/p/Panel.qml", "api": "1.0"}, "card": {"qml": "Card.qml"}}},
+    {"name": "api 1.0.0", "valid": false, "error": "json", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "panel": {"qml": "/p/Panel.qml", "api": "1.0.0"}}},
+    {"name": "api 01.0", "valid": false, "error": "json", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "panel": {"qml": "/p/Panel.qml", "api": "01.0"}}},
+    {"name": "api 1.-1", "valid": false, "error": "json", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "panel": {"qml": "/p/Panel.qml", "api": "1.-1"}}},
+    {"name": "api +1.0", "valid": false, "error": "json", "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock"}, "panel": {"qml": "/p/Panel.qml", "api": "+1.0"}}},
+    {"name": "shortcuts e tui presentes", "valid": true, "manifest": {"schema": 1, "app": {"id": "a", "name": "A", "icon": "x", "socket": "a.sock", "tui": "lucerna-a"}, "shortcuts": {"panel": "SUPER+A", "open": "SUPER+SHIFT+A"}}},
+    {"name": "schema desconhecido com formato novo", "valid": false, "error": "schema", "manifest": {"schema": 2, "aplicativo": {"identificador": "a"}, "paineis": []}}
   ]
 }

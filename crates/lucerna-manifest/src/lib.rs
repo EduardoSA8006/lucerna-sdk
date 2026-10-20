@@ -109,6 +109,16 @@ impl ManifestError {
 impl Manifest {
     /// Lê e valida um manifesto a partir do JSON.
     pub fn from_json(s: &str) -> Result<Manifest, ManifestError> {
+        #[derive(Deserialize)]
+        struct Probe {
+            schema: u32,
+        }
+        // Lê o `schema` antes: um formato futuro devolve `Schema(n)`, não `Json`.
+        if let Ok(Probe { schema }) = serde_json::from_str(s)
+            && schema != SCHEMA
+        {
+            return Err(ManifestError::Schema(schema));
+        }
         let m: Manifest =
             serde_json::from_str(s).map_err(|e| ManifestError::Json(e.to_string()))?;
         m.validate()?;
@@ -161,6 +171,9 @@ impl Manifest {
 }
 
 /// O painel carrega quando tem o mesmo major e `panel.minor <= shell.minor`.
+///
+/// Um shell com minor maior que o do painel é compatível (só acrescentou
+/// coisas opcionais); o contrário não é. O shell repete esta mesma regra em QML.
 pub fn api_compatible(panel: Version, shell: Version) -> bool {
     panel.major == shell.major && panel.minor <= shell.minor
 }
