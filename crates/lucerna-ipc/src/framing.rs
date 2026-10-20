@@ -70,7 +70,7 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
                 }
                 None => {
                     // Cabe um `\r` além do limite; passou disso, a linha já é grande demais.
-                    if self.line.len() + chunk.len() > self.max + 1 {
+                    if self.line.len() + chunk.len() > self.max.saturating_add(1) {
                         self.line.clear();
                         return Err(FrameError::TooLarge);
                     }
@@ -84,6 +84,11 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
 }
 
 /// Escreve `msg` como uma linha (`to_json()` + `\n`) e dá `flush`.
+///
+/// **Não é segura para cancelar no meio:** se o futuro for descartado depois de
+/// parte dos bytes ter saído, o fluxo fica com uma linha pela metade. Quem escreve
+/// (o escritor único da conexão) deve chamá-la no corpo de um braço do `select!`,
+/// nunca como um dos futuros disputados.
 pub async fn write_message<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> io::Result<()> {
     let mut bytes = msg.to_json().into_bytes();
     bytes.push(b'\n');
