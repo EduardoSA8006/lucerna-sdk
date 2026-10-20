@@ -101,9 +101,13 @@ fn cli_json_and_exit_codes() {
         serde_json::from_slice::<Value>(&out.stdout).unwrap(),
         json!({"counter":{"value":3}})
     );
-    let big = i64::MAX.to_string();
-    hello(t.path()).args(["add", &big]).output().unwrap();
-    let out = hello(t.path()).args(["add", &big]).output().unwrap();
+    // Chega ao máximo (3 + MAX - 3) e então passa dele.
+    let out = hello(t.path())
+        .args(["add", &(i64::MAX - 3).to_string()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let out = hello(t.path()).args(["add", "1"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
@@ -127,12 +131,12 @@ fn cli_json_and_exit_codes() {
     assert!(String::from_utf8_lossy(&out.stdout).contains(env!("CARGO_PKG_VERSION")));
 }
 
-#[test]
-fn watch_prints_json_lines() {
-    let t = tempfile::tempdir().unwrap();
-    let _srv = serve(t.path(), 60_000);
+/// `--json watch counter` com as linhas lidas numa thread (o `recv_timeout`
+/// impede o teste de travar), já com o retrato inicial lido: a conexão está
+/// aceita e contada pelo serviço.
+fn watch_json(dir: &Path) -> (Serve, mpsc::Receiver<String>) {
     let mut watch = Serve(
-        hello(t.path())
+        hello(dir)
             .args(["--json", "watch", "counter"])
             .stdout(Stdio::piped())
             .spawn()
@@ -140,21 +144,31 @@ fn watch_prints_json_lines() {
     );
     let stdout = watch.child().stdout.take().unwrap();
     let (tx, rx) = mpsc::channel();
-    // A leitura fica numa thread: o `recv_timeout` impede o teste de travar.
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
-            if tx.send(line.unwrap()).is_err() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
                 break;
             }
         }
     });
-    let line = |rx: &mpsc::Receiver<String>| -> Value {
-        serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
-    };
     assert_eq!(
         line(&rx),
         json!({"topic":"counter","seq":0,"data":{"value":0}})
     );
+    (watch, rx)
+}
+
+/// A próxima linha JSON do `watch`, em até 5 s.
+fn line(rx: &mpsc::Receiver<String>) -> Value {
+    serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
+}
+
+#[test]
+fn watch_prints_json_lines() {
+    let t = tempfile::tempdir().unwrap();
+    let _srv = serve(t.path(), 60_000);
+    let (_watch, rx) = watch_json(t.path());
     let out = hello(t.path()).args(["add", "2"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(
@@ -167,13 +181,7 @@ fn watch_prints_json_lines() {
 fn idle_exit() {
     let t = tempfile::tempdir().unwrap();
     let mut srv = serve(t.path(), 200);
-    let watch = Serve(
-        hello(t.path())
-            .args(["watch", "counter"])
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
+    let (watch, _rx) = watch_json(t.path());
     std::thread::sleep(Duration::from_millis(500)); // > 2× a ociosidade
     assert!(
         srv.child().try_wait().unwrap().is_none(),
@@ -196,8 +204,11 @@ fn idle_exit() {
 fn bar_item_holds_the_service_even_without_shell() {
     let t = tempfile::tempdir().unwrap();
     let mut srv = serve(t.path(), 200);
+    // O `watch` segura o serviço até o `add` pôr o item na barra.
+    let (watch, _rx) = watch_json(t.path());
     let out = hello(t.path()).args(["add", "1"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
+    drop(watch);
     std::thread::sleep(Duration::from_millis(500));
     assert!(
         srv.child().try_wait().unwrap().is_none(),
@@ -209,6 +220,25 @@ fn bar_item_holds_the_service_even_without_shell() {
         wait_exit(srv.child(), Duration::from_secs(2))
             .expect("o serviço não saiu depois do reset")
             .success()
+    );
+}
+
+#[test]
+fn sigterm_exits_clean() {
+    let t = tempfile::tempdir().unwrap();
+    let mut srv = serve(t.path(), 60_000);
+    let pid = srv.child().id().to_string();
+    let st = Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+    assert!(st.success());
+    assert!(
+        wait_exit(srv.child(), Duration::from_secs(2))
+            .expect("o serviço não saiu com SIGTERM")
+            .success(),
+        "sai com 0"
+    );
+    assert!(
+        !t.path().join("run/lucerna/hello.sock").exists(),
+        "o socket manual é apagado"
     );
 }
 
