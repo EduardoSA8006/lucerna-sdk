@@ -115,3 +115,37 @@ fn round_trip_with_everything() {
     assert_eq!(v["shortcuts"]["panel"], "SUPER+A");
     assert_eq!(Manifest::from_json(&json).unwrap(), m);
 }
+
+#[test]
+fn error_messages_are_sentences() {
+    let cases = [
+        (ManifestError::Json("x".into()), "Manifesto inválido: x."),
+        (
+            ManifestError::Schema(2),
+            "Schema do manifesto não suportado: 2 (esperado 1).",
+        ),
+        (
+            ManifestError::AppId("A".into()),
+            "Id de app inválido: \"A\".",
+        ),
+        (
+            ManifestError::Socket {
+                expected: "a.sock".into(),
+                found: "b.sock".into(),
+            },
+            "O socket do manifesto é \"b.sock\", esperado \"a.sock\".",
+        ),
+        (
+            ManifestError::EmptyField("app.name"),
+            "O campo app.name não pode ser vazio.",
+        ),
+        (
+            ManifestError::RelativePath("p/Panel.qml".into()),
+            "O caminho p/Panel.qml precisa ser absoluto.",
+        ),
+        (ManifestError::CardWithoutPanel, "O cartão exige um painel."),
+    ];
+    for (e, want) in cases {
+        assert_eq!(e.to_string(), want);
+    }
+}

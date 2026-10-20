@@ -115,3 +115,14 @@ async fn resumes_after_timeout_mid_line() {
     assert_eq!(r.next_line().await.unwrap().unwrap(), r#"{"a":1}"#);
     assert!(r.next_line().await.unwrap().is_none());
 }
+
+#[test]
+fn frame_error_messages_are_sentences() {
+    assert_eq!(FrameError::TooLarge.to_string(), "Mensagem grande demais.");
+    assert_eq!(
+        FrameError::InvalidUtf8.to_string(),
+        "A mensagem não está em UTF-8 válido."
+    );
+    let io = FrameError::Io(std::io::Error::other("falhou"));
+    assert_eq!(io.to_string(), "Erro de E/S: falhou.");
+}

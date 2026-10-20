@@ -428,3 +428,35 @@ async fn sequential_calls_without_draining_states_do_not_block() {
     }
     assert!(got.len() <= 3 && got.is_sorted(), "estados: {got:?}");
 }
+
+#[test]
+fn client_error_messages_are_sentences() {
+    let io = || std::io::Error::other("falhou");
+    let decode = serde_json::from_str::<i32>("x").unwrap_err();
+    let cases = [
+        (
+            ClientError::Connect(io()),
+            "Não foi possível conectar ao serviço: falhou.".to_string(),
+        ),
+        (
+            ClientError::Io(io()),
+            "Erro de comunicação com o serviço: falhou.".into(),
+        ),
+        (ClientError::Closed, "O serviço fechou a conexão.".into()),
+        (
+            ClientError::Timeout,
+            "O serviço não respondeu a tempo.".into(),
+        ),
+        (
+            ClientError::Rpc(lucerna_protocol::RpcError::app(1, "Falhou.")),
+            "Falhou.".into(),
+        ),
+        (
+            ClientError::Decode(decode),
+            "Resposta inválida do serviço: expected value at line 1 column 1.".into(),
+        ),
+    ];
+    for (e, want) in cases {
+        assert_eq!(e.to_string(), want);
+    }
+}

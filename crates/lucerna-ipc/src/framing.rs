@@ -12,13 +12,13 @@ pub const MAX_MESSAGE: usize = 1_048_576;
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {
     /// A linha passou do limite; o leitor não deve mais ser usado (a conexão fecha).
-    #[error("mensagem grande demais")]
+    #[error("Mensagem grande demais.")]
     TooLarge,
     /// A linha não é UTF-8 válido; ela foi consumida inteira e o leitor continua.
-    #[error("mensagem não é UTF-8 válido")]
+    #[error("A mensagem não está em UTF-8 válido.")]
     InvalidUtf8,
     /// Erro de E/S do fluxo.
-    #[error("erro de E/S: {0}")]
+    #[error("Erro de E/S: {0}.")]
     Io(#[from] io::Error),
 }
 

@@ -60,20 +60,21 @@ pub struct CardInfo {
     pub qml: PathBuf,
 }
 
-/// Erro ao ler ou validar um manifesto.
+/// Erro ao ler ou validar um manifesto. As mensagens são frases em português,
+/// com maiúscula e ponto final.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ManifestError {
     /// JSON inválido, campo faltando ou versão de `api` malformada.
-    #[error("manifesto inválido: {0}")]
+    #[error("Manifesto inválido: {0}.")]
     Json(String),
     /// `schema` diferente de 1.
-    #[error("schema do manifesto não suportado: {0} (esperado {SCHEMA})")]
+    #[error("Schema do manifesto não suportado: {0} (esperado {SCHEMA}).")]
     Schema(u32),
     /// Id do app fora do formato.
-    #[error("id de app inválido: {0}")]
+    #[error("Id de app inválido: {0:?}.")]
     AppId(String),
     /// `socket` diferente de `<id>.sock`.
-    #[error("socket do manifesto é {found:?}, esperado {expected:?}")]
+    #[error("O socket do manifesto é {found:?}, esperado {expected:?}.")]
     Socket {
         /// Valor esperado (`<id>.sock`).
         expected: String,
@@ -81,13 +82,13 @@ pub enum ManifestError {
         found: String,
     },
     /// Campo de texto vazio.
-    #[error("o campo {0} não pode ser vazio")]
+    #[error("O campo {0} não pode ser vazio.")]
     EmptyField(&'static str),
     /// Caminho de QML que não é absoluto.
-    #[error("o caminho {} precisa ser absoluto", .0.display())]
+    #[error("O caminho {} precisa ser absoluto.", .0.display())]
     RelativePath(PathBuf),
     /// `card` sem `panel`.
-    #[error("o cartão exige um painel")]
+    #[error("O cartão exige um painel.")]
     CardWithoutPanel,
 }
 

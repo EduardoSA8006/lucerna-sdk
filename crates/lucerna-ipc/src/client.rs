@@ -34,31 +34,32 @@ use crate::framing::{FrameError, LineReader, MAX_MESSAGE};
 /// serviço tenha mandado antes de fechar.
 const FATAL_GRACE: Duration = Duration::from_secs(1);
 
-/// Erro do cliente.
+/// Erro do cliente. As mensagens são frases em português, com maiúscula e
+/// ponto final, prontas para o usuário.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     /// Não deu para abrir o socket (o serviço não está lá).
-    #[error("não foi possível conectar ao serviço: {0}")]
+    #[error("Não foi possível conectar ao serviço: {0}.")]
     Connect(io::Error),
     /// Erro de E/S com a conexão aberta.
     ///
     /// Inclui o `EPIPE` de uma escrita quando o serviço fechou sem mandar erro.
-    #[error("erro de comunicação com o serviço: {0}")]
+    #[error("Erro de comunicação com o serviço: {0}.")]
     Io(io::Error),
     /// O serviço respondeu com erro. Um `-32010` no aperto de mão também quer
     /// dizer que não dá para falar com o serviço.
     #[error("{0}")]
     Rpc(RpcError),
     /// A conexão fechou antes da resposta.
-    #[error("o serviço fechou a conexão")]
+    #[error("O serviço fechou a conexão.")]
     Closed,
     /// O prazo de `connect_timeout` ou `call_timeout` passou sem resposta.
-    #[error("o serviço não respondeu a tempo")]
+    #[error("O serviço não respondeu a tempo.")]
     Timeout,
     /// O serviço respondeu, mas o resultado não tem a forma esperada
     /// (ex.: um `hello` sem os campos do protocolo). O serviço existe e falou:
     /// não é "sem serviço".
-    #[error("resposta inválida do serviço: {0}")]
+    #[error("Resposta inválida do serviço: {0}.")]
     Decode(serde_json::Error),
 }
 
