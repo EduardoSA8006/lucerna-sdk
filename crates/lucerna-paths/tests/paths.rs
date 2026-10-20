@@ -241,3 +241,29 @@ fn env_config_home_and_runtime_dir() {
         Err(PathsError::NoRuntimeDir)
     ));
 }
+
+#[test]
+fn socket_path_longer_than_sun_path_is_an_error() {
+    // `/` + n × `x` + `/lucerna/a.sock` (15 bytes): n = 91 dá 107 bytes, o limite.
+    let mut e = env("/home/u");
+    e.xdg_runtime_dir = Some(format!("/{}", "x".repeat(91)).into());
+    let ok = AppPaths::new("a", &e).unwrap().socket().unwrap();
+    assert_eq!(ok.as_os_str().len(), 107);
+
+    e.xdg_runtime_dir = Some(format!("/{}", "x".repeat(92)).into());
+    let err = AppPaths::new("a", &e).unwrap().socket().unwrap_err();
+    let path = format!("/{}/lucerna/a.sock", "x".repeat(92));
+    assert!(
+        matches!(&err, PathsError::SocketPathTooLong { len: 108, path: p } if p.as_os_str() == path.as_str())
+    );
+    assert_eq!(
+        err.to_string(),
+        format!("O caminho do socket é longo demais (108 bytes; o limite é 107): {path}.")
+    );
+    // `shell.sock` tem 4 bytes a mais que `a.sock`.
+    e.xdg_runtime_dir = Some(format!("/{}", "x".repeat(88)).into());
+    assert!(matches!(
+        shell_socket(&e),
+        Err(PathsError::SocketPathTooLong { len: 108, .. })
+    ));
+}

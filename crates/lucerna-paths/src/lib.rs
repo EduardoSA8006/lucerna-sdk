@@ -98,6 +98,32 @@ pub enum PathsError {
     /// `XDG_RUNTIME_DIR` ausente ou relativo.
     #[error("XDG_RUNTIME_DIR não está definido.")]
     NoRuntimeDir,
+    /// O caminho do socket não cabe em `sun_path` (108 bytes com o `\0` final).
+    #[error(
+        "O caminho do socket é longo demais ({len} bytes; o limite é {max}): {}.",
+        path.display(),
+        max = SOCKET_PATH_MAX
+    )]
+    SocketPathTooLong {
+        /// O caminho que não coube.
+        path: PathBuf,
+        /// O tamanho dele em bytes.
+        len: usize,
+    },
+}
+
+/// Maior caminho de socket Unix no Linux, em bytes: `sun_path` tem 108, com o
+/// `\0` final.
+pub const SOCKET_PATH_MAX: usize = 107;
+
+/// Confere que o caminho cabe num endereço de socket Unix.
+fn fits_sun_path(path: PathBuf) -> Result<PathBuf, PathsError> {
+    let len = path.as_os_str().len();
+    if len > SOCKET_PATH_MAX {
+        Err(PathsError::SocketPathTooLong { path, len })
+    } else {
+        Ok(path)
+    }
 }
 
 /// Confere o id do app: `^[a-z][a-z0-9-]{0,31}$`. O id `shell` é reservado
@@ -164,18 +190,21 @@ impl AppPaths {
         self.env.runtime_lucerna()
     }
 
-    /// `$XDG_RUNTIME_DIR/lucerna/<app>.sock`.
+    /// `$XDG_RUNTIME_DIR/lucerna/<app>.sock`; [`PathsError::SocketPathTooLong`]
+    /// se passar de [`SOCKET_PATH_MAX`] bytes.
     pub fn socket(&self) -> Result<PathBuf, PathsError> {
-        Ok(self
-            .env
-            .runtime_lucerna()?
-            .join(format!("{}.sock", self.app)))
+        fits_sun_path(
+            self.env
+                .runtime_lucerna()?
+                .join(format!("{}.sock", self.app)),
+        )
     }
 }
 
-/// `$XDG_RUNTIME_DIR/lucerna/shell.sock`.
+/// `$XDG_RUNTIME_DIR/lucerna/shell.sock`; [`PathsError::SocketPathTooLong`]
+/// se passar de [`SOCKET_PATH_MAX`] bytes.
 pub fn shell_socket(env: &Env) -> Result<PathBuf, PathsError> {
-    Ok(env.runtime_lucerna()?.join("shell.sock"))
+    fits_sun_path(env.runtime_lucerna()?.join("shell.sock"))
 }
 
 /// Pastas de manifestos: a do usuário primeiro, depois a do sistema.
