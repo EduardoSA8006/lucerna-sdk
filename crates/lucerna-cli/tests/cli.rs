@@ -1,0 +1,445 @@
+use std::io::{self, Write};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use clap::{Arg, Command, value_parser};
+use lucerna_cli::render::render_default;
+use lucerna_cli::{Call, CliApp, CliCommand, Invocation, usage_exit};
+use lucerna_ipc::{ServerBuilder, Topic};
+use lucerna_paths::Env;
+use lucerna_protocol::RpcError;
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixListener;
+use tokio::task::JoinHandle;
+
+/// `Env` com o runtime em `<dir>/run` e a pasta `<dir>/run/lucerna` criada.
+fn env_in(dir: &Path) -> Env {
+    std::fs::create_dir_all(dir.join("run/lucerna")).unwrap();
+    Env {
+        xdg_runtime_dir: Some(dir.join("run")),
+        home: Some(dir.to_path_buf()),
+        ..Env::default()
+    }
+}
+
+fn socket(dir: &Path) -> std::path::PathBuf {
+    dir.join("run/lucerna/demo.sock")
+}
+
+/// Serviço `demo` com o tópico `counter` e os métodos `counter.add` e `app.fail`.
+async fn service(dir: &Path) -> (Env, Topic, JoinHandle<()>) {
+    let env = env_in(dir);
+    let mut b = ServerBuilder::new("demo", "0.1.0");
+    let topic = b.topic("counter", json!({"value": 0}));
+    let t = topic.clone();
+    b.method("counter.add", move |p| {
+        let t = t.clone();
+        async move {
+            let n = p
+                .as_ref()
+                .and_then(|p| p["n"].as_i64())
+                .ok_or_else(|| RpcError::invalid_params("n"))?;
+            let v = t.current().data["value"].as_i64().unwrap_or(0) + n;
+            t.publish(json!({"value": v}));
+            Ok(json!({"value": v}))
+        }
+    });
+    b.method("app.fail", |_| async { Err(RpcError::app(1, "Falhou.")) });
+    let server = b.build();
+    let listener = UnixListener::bind(socket(dir)).unwrap();
+    let handle = tokio::spawn(async move {
+        let _ = server.serve(listener).await;
+    });
+    (env, topic, handle)
+}
+
+fn app() -> CliApp {
+    CliApp::new("demo", "demo", "0.1.0", "Demonstração.")
+        .command(CliCommand {
+            command: Command::new("add").about("Soma ao contador.").arg(
+                Arg::new("n")
+                    .required(true)
+                    .value_parser(value_parser!(i64))
+                    .help("Quanto somar."),
+            ),
+            to_call: |m| Call {
+                method: "counter.add".into(),
+                params: Some(json!({"n": m.get_one::<i64>("n").copied().unwrap()})),
+            },
+            render: Some(|v| format!("Contador: {}", v["value"])),
+        })
+        .command(CliCommand {
+            command: Command::new("fail").about("Falha de propósito."),
+            to_call: |_| Call {
+                method: "app.fail".into(),
+                params: None,
+            },
+            render: None,
+        })
+}
+
+/// Saída compartilhada: o teste lê enquanto o `run` escreve.
+#[derive(Clone, Default)]
+struct Shared(Arc<Mutex<Vec<u8>>>);
+
+impl Shared {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+
+    async fn wait_for(&self, pred: impl Fn(&str) -> bool) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !pred(&self.text()) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("saída esperada não veio: {:?}", self.text()));
+    }
+}
+
+impl Write for Shared {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+async fn run(args: &[&str], env: &Env) -> (i32, String, String) {
+    let a = app();
+    let Invocation::Cli(r) = a.parse_from(args).unwrap() else {
+        panic!("não é um subcomando da linha de comando: {args:?}");
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = a.run(r, env, &mut out, &mut err).await;
+    (
+        code,
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(err).unwrap(),
+    )
+}
+
+/// Roda numa tarefa, com a saída compartilhada.
+fn spawn_run(args: &'static [&'static str], env: &Env) -> (JoinHandle<i32>, Shared, Shared) {
+    let (out, err) = (Shared::default(), Shared::default());
+    let env = env.clone();
+    let (mut o, mut e) = (out.clone(), err.clone());
+    let h = tokio::spawn(async move {
+        let a = app();
+        let Invocation::Cli(r) = a.parse_from(args).unwrap() else {
+            panic!("não é um subcomando da linha de comando");
+        };
+        a.run(r, &env, &mut o, &mut e).await
+    });
+    (h, out, err)
+}
+
+#[test]
+fn parse_dispatch() {
+    let a = app();
+    assert!(matches!(a.parse_from(["demo"]).unwrap(), Invocation::Tui));
+    assert!(matches!(
+        a.parse_from(["demo", "serve"]).unwrap(),
+        Invocation::Serve
+    ));
+    assert!(matches!(
+        a.parse_from(["demo", "add", "3"]).unwrap(),
+        Invocation::Cli(_)
+    ));
+    let e = a.parse_from(["demo", "add", "três"]).unwrap_err();
+    assert_eq!(usage_exit(&e), 64);
+    assert_eq!(
+        usage_exit(&a.parse_from(["demo", "--help"]).unwrap_err()),
+        0
+    );
+    assert_eq!(
+        usage_exit(&a.parse_from(["demo", "--version"]).unwrap_err()),
+        0
+    );
+    assert!(matches!(
+        a.parse_from(["demo", "add", "-3"]).unwrap(),
+        Invocation::Cli(_)
+    ));
+    let help = a.clap().render_help().to_string();
+    assert!(!help.contains("serve"), "{help}");
+    assert!(
+        help.contains("Uso:") && help.contains("Comandos") && help.contains("Mostra esta ajuda."),
+        "{help}"
+    );
+    assert!(
+        !help.contains("Usage:") && !help.contains("Print help"),
+        "{help}"
+    );
+}
+
+#[test]
+fn subcommand_help_is_portuguese_too() {
+    let mut c = app().clap();
+    let help = c
+        .find_subcommand_mut("add")
+        .unwrap()
+        .render_help()
+        .to_string();
+    assert!(
+        help.contains("Uso:") && help.contains("Mostra esta ajuda."),
+        "{help}"
+    );
+    assert!(
+        !help.contains("Usage:") && !help.contains("Print help"),
+        "{help}"
+    );
+    let e = app().parse_from(["demo", "add", "--help"]).unwrap_err();
+    assert_eq!(usage_exit(&e), 0);
+}
+
+#[test]
+#[should_panic(expected = "status")]
+fn reserved_command_names_panic() {
+    let _ = app().command(CliCommand {
+        command: Command::new("status"),
+        to_call: |_| Call {
+            method: "x".into(),
+            params: None,
+        },
+        render: None,
+    });
+}
+
+#[test]
+#[should_panic(expected = "add")]
+fn repeated_command_panics() {
+    let _ = app().command(CliCommand {
+        command: Command::new("add"),
+        to_call: |_| Call {
+            method: "x".into(),
+            params: None,
+        },
+        render: None,
+    });
+}
+
+#[tokio::test]
+async fn call_readable_and_json() {
+    let t = tempfile::tempdir().unwrap();
+    let (env, _topic, _s) = service(t.path()).await;
+    assert_eq!(
+        run(&["demo", "add", "3"], &env).await,
+        (0, "Contador: 3\n".into(), String::new())
+    );
+    let (code, out, _) = run(&["demo", "--json", "add", "2"], &env).await;
+    assert_eq!(code, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&out).unwrap(),
+        json!({"value":5})
+    );
+    // `--json` depois do subcomando também vale (global); número negativo é valor.
+    let (code, out, _) = run(&["demo", "add", "-1", "--json"], &env).await;
+    assert_eq!(code, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&out).unwrap(),
+        json!({"value":4})
+    );
+}
+
+#[tokio::test]
+async fn app_error_exits_1() {
+    let t = tempfile::tempdir().unwrap();
+    let (env, _topic, _s) = service(t.path()).await;
+    assert_eq!(
+        run(&["demo", "fail"], &env).await,
+        (1, String::new(), "erro: Falhou.\n".into())
+    );
+    let (code, out, err) = run(&["demo", "--json", "fail"], &env).await;
+    assert_eq!(code, 1);
+    assert_eq!(out, "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&err).unwrap(),
+        json!({"error":{"code":1,"message":"Falhou."}})
+    );
+}
+
+#[tokio::test]
+async fn no_service_exits_2() {
+    let t = tempfile::tempdir().unwrap();
+    let env = env_in(t.path());
+    let (code, out, err) = run(&["demo", "status"], &env).await;
+    assert_eq!(code, 2);
+    assert_eq!(out, "");
+    assert!(err.starts_with("Sem conexão com o serviço demo"), "{err}");
+
+    // Review Focus 4: sem XDG_RUNTIME_DIR, erro claro (nunca /tmp).
+    let env = Env {
+        home: Some(t.path().to_path_buf()),
+        ..Env::default()
+    };
+    let (code, _, err) = run(&["demo", "add", "1"], &env).await;
+    assert_eq!(code, 2);
+    assert!(err.contains("XDG_RUNTIME_DIR não está definido."), "{err}");
+}
+
+#[tokio::test]
+async fn status_prints_every_common_topic() {
+    let t = tempfile::tempdir().unwrap();
+    let (env, _topic, _s) = service(t.path()).await;
+    assert_eq!(
+        run(&["demo", "status"], &env).await,
+        (0, "counter:\n  value: 0\n".into(), String::new())
+    );
+    let (code, out, _) = run(&["demo", "--json", "status"], &env).await;
+    assert_eq!(code, 0);
+    assert_eq!(
+        serde_json::from_str::<Value>(&out).unwrap(),
+        json!({"counter":{"value":0}})
+    );
+}
+
+#[tokio::test]
+async fn watch_follows_until_the_service_goes_away() {
+    let t = tempfile::tempdir().unwrap();
+    let (env, topic, s) = service(t.path()).await;
+
+    let (code, _, err) = run(&["demo", "watch", "x"], &env).await;
+    assert_eq!((code, err.as_str()), (1, "erro: Tópico desconhecido: x.\n"));
+
+    let (json_h, json_out, _) = spawn_run(&["demo", "--json", "watch", "counter"], &env);
+    let (text_h, text_out, text_err) = spawn_run(&["demo", "watch", "counter"], &env);
+    json_out.wait_for(|o| o.lines().count() == 1).await;
+    text_out.wait_for(|o| o == "counter #0\n  value: 0\n").await;
+
+    topic.publish(json!({"value": 1}));
+    json_out.wait_for(|o| o.lines().count() == 2).await;
+    text_out
+        .wait_for(|o| o == "counter #0\n  value: 0\ncounter #1\n  value: 1\n")
+        .await;
+
+    // O serviço some no meio do `watch`: código 2.
+    s.abort();
+    let wait = |h: JoinHandle<i32>| async {
+        tokio::time::timeout(Duration::from_secs(10), h)
+            .await
+            .expect("o watch não terminou")
+            .unwrap()
+    };
+    assert_eq!(wait(json_h).await, 2);
+    assert_eq!(wait(text_h).await, 2);
+    assert!(
+        text_err
+            .text()
+            .starts_with("Sem conexão com o serviço demo"),
+        "{}",
+        text_err.text()
+    );
+    let lines: Vec<Value> = json_out
+        .text()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            json!({"topic":"counter","seq":0,"data":{"value":0}}),
+            json!({"topic":"counter","seq":1,"data":{"value":1}}),
+        ]
+    );
+}
+
+/// Serviço falso que aceita conexões e não responde nada.
+async fn silent_service(dir: &Path) -> Env {
+    let env = env_in(dir);
+    let listener = UnixListener::bind(socket(dir)).unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((s, _)) = listener.accept().await {
+            held.push(s);
+        }
+    });
+    env
+}
+
+/// Serviço falso que responde o `hello` com `hello_result` e ignora o resto.
+async fn fake_hello_service(dir: &Path, hello_result: Value) -> Env {
+    let env = env_in(dir);
+    let listener = UnixListener::bind(socket(dir)).unwrap();
+    tokio::spawn(async move {
+        while let Ok((s, _)) = listener.accept().await {
+            let result = hello_result.clone();
+            tokio::spawn(async move {
+                let (rd, mut wr) = s.into_split();
+                let mut lines = BufReader::new(rd).lines();
+                let mut first = true;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if first {
+                        first = false;
+                        let req: Value = serde_json::from_str(&line).unwrap();
+                        let resp = json!({"jsonrpc":"2.0","id":req["id"],"result":result});
+                        let mut bytes = resp.to_string().into_bytes();
+                        bytes.push(b'\n');
+                        wr.write_all(&bytes).await.unwrap();
+                    }
+                }
+            });
+        }
+    });
+    env
+}
+
+fn good_hello() -> Value {
+    json!({"protocol":"1.0","app":"demo","version":"0.1.0","topics":["counter"],"streams":[],"methods":["counter.add"]})
+}
+
+#[tokio::test(start_paused = true)]
+async fn silent_service_times_out_with_2() {
+    let t = tempfile::tempdir().unwrap();
+    let env = silent_service(t.path()).await;
+    let (code, out, err) = run(&["demo", "add", "1"], &env).await;
+    assert_eq!(code, 2);
+    assert_eq!(out, "");
+    assert_eq!(err, "Sem conexão com o serviço demo: tempo esgotado.\n");
+}
+
+#[tokio::test(start_paused = true)]
+async fn unanswered_call_times_out_with_2() {
+    let t = tempfile::tempdir().unwrap();
+    let env = fake_hello_service(t.path(), good_hello()).await;
+    for args in [&["demo", "add", "1"][..], &["demo", "status"][..]] {
+        let (code, _, err) = run(args, &env).await;
+        assert_eq!(code, 2, "{args:?}");
+        assert_eq!(err, "Sem conexão com o serviço demo: tempo esgotado.\n");
+    }
+}
+
+#[tokio::test]
+async fn malformed_hello_is_not_no_service() {
+    let t = tempfile::tempdir().unwrap();
+    let env = fake_hello_service(t.path(), json!("oops")).await;
+    let (code, out, err) = run(&["demo", "add", "1"], &env).await;
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(out, "");
+    assert!(
+        err.starts_with("erro: Resposta inválida do serviço"),
+        "{err}"
+    );
+    let (code, _, err) = run(&["demo", "--json", "add", "1"], &env).await;
+    assert_eq!(code, 1);
+    let v: Value = serde_json::from_str(&err).unwrap();
+    assert_eq!(v["error"]["code"], -32603);
+}
+
+#[test]
+fn render_default_rules() {
+    assert_eq!(render_default(&json!("oi")), "oi");
+    assert_eq!(render_default(&json!(null)), "");
+    assert_eq!(
+        render_default(&json!({"b":1,"a":{"x":[1]}})),
+        "a: {\"x\":[1]}\nb: 1"
+    );
+    assert_eq!(render_default(&json!(["um", "dois"])), "um\ndois");
+    assert_eq!(render_default(&json!({"nome":"Ana"})), "nome: Ana");
+    assert_eq!(render_default(&json!(3)), "3");
+}
