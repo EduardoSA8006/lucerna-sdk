@@ -205,6 +205,30 @@ async fn bar_items_count_as_pending_work() {
     assert_eq!(w.pending(), 0);
 }
 
+#[tokio::test(start_paused = true)]
+async fn dnd_counts_as_pending_work() {
+    let w = WorkTracker::new();
+    let shell = Shell::new("demo", w.clone()); // sem spawn: o shell nem existe
+    shell.dnd_request("foco");
+    assert_eq!(w.pending(), 1);
+    shell.dnd_request("outro motivo"); // repetir só troca o motivo
+    assert_eq!(w.pending(), 1);
+    shell.bar_set(item("1")); // barra e não perturbe juntos: um trabalho só
+    assert_eq!(w.pending(), 1);
+    shell.bar_clear("c");
+    assert_eq!(w.pending(), 1, "o não perturbe ainda segura");
+    shell.dnd_release();
+    assert_eq!(w.pending(), 0);
+    shell.dnd_release(); // devolver de novo não faz nada
+    assert_eq!(w.pending(), 0);
+    shell.dnd_request("foco");
+    shell.bar_set(item("1"));
+    shell.dnd_release();
+    assert_eq!(w.pending(), 1, "a barra ainda segura");
+    shell.bar_clear("c");
+    assert_eq!(w.pending(), 0);
+}
+
 #[tokio::test]
 async fn service_shell_uses_the_builder_work_tracker() {
     let b = ServiceBuilder::new("demo", "0.1.0");

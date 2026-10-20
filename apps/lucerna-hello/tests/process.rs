@@ -224,6 +224,29 @@ fn bar_item_holds_the_service_even_without_shell() {
 }
 
 #[test]
+fn dnd_holds_the_service_even_without_shell() {
+    let t = tempfile::tempdir().unwrap();
+    let mut srv = serve(t.path(), 200);
+    // O `watch` segura o serviço até o `quiet on` pedir o não perturbe.
+    let (watch, _rx) = watch_json(t.path());
+    let out = hello(t.path()).args(["quiet", "on"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    drop(watch);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        srv.child().try_wait().unwrap().is_none(),
+        "o não perturbe segura o serviço"
+    );
+    let out = hello(t.path()).args(["quiet", "off"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        wait_exit(srv.child(), Duration::from_secs(2))
+            .expect("o serviço não saiu depois do quiet off")
+            .success()
+    );
+}
+
+#[test]
 fn sigterm_exits_clean() {
     let t = tempfile::tempdir().unwrap();
     let mut srv = serve(t.path(), 60_000);

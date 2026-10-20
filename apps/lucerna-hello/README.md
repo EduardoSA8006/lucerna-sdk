@@ -12,7 +12,8 @@ O app de exemplo do Lucerna: um contador. É o molde que os apps copiam.
   (`{"tick": k, "bands": [64 × f32]}` a cada 1 ms, produzido só com assinante).
 - **Métodos.** `counter.add {"n"}`, `counter.reset` e `quiet.set {"on"}`.
 - **Shell.** Com o contador diferente de zero, o item `counter` fica na barra
-  com o valor; `quiet.set` pede ou devolve o não perturbe. Sem shell, nada dá
+  com o valor; `quiet.set` pede ou devolve o não perturbe. Os dois seguram o
+  serviço (ele não sai por ociosidade enquanto existirem). Sem shell, nada dá
   erro: o estado é reaplicado quando ele volta.
 - **Testes.** `tests/protocol.rs` fala o protocolo com o serviço em processo,
   num socket temporário; `tests/shell.rs` usa o `FakeShell` do
@@ -47,7 +48,7 @@ tire o `sudo`; o `ExecStart=` da unidade aponta para `/usr/bin`.
 
 O systemd escuta em `$XDG_RUNTIME_DIR/lucerna/hello.sock` (pasta `0700`,
 socket `0600`) e sobe o serviço na primeira conexão; o serviço sai sozinho
-depois de 60 s sem clientes e sem itens na barra.
+depois de 60 s sem clientes, sem itens na barra e sem não perturbe pedido.
 
 Para desenvolver sem instalar, `cargo run -p lucerna-hello -- serve` cria o
 socket à mão no mesmo lugar (`LUCERNA_IDLE_TIMEOUT_MS` encurta a ociosidade).

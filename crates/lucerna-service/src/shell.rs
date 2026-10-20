@@ -66,7 +66,7 @@ struct Inner {
     app: String,
     desired: watch::Sender<Desired>,
     work: WorkTracker,
-    /// Seguro enquanto houver item de barra desejado.
+    /// Seguro enquanto houver item de barra ou não perturbe desejado.
     guard: Mutex<Option<WorkGuard>>,
     connected: watch::Sender<bool>,
     /// Fila de pedidos avulsos da tarefa de conexão atual.
@@ -79,6 +79,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Pedidos do app ao shell. Clonar dá outra alça para o mesmo estado.
 ///
+/// Os itens da barra e o não perturbe pedido contam como trabalho pendente no
+/// [`WorkTracker`] do [`Shell::new`]: o serviço não sai por ociosidade enquanto
+/// houver um deles, mesmo com o shell fora.
+///
 /// Nenhum método é `async` nem devolve erro: sem shell, os pedidos viram nada
 /// (os itens da barra e o não perturbe ficam guardados para quando ele voltar).
 /// Um pedido recusado pelo shell não é repetido até o app mudar aquele item
@@ -89,7 +93,7 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// Um shell sem conexão, para o app `app`; os itens da barra contam em `work`.
+    /// Um shell sem conexão, para o app `app`; a barra e o não perturbe contam em `work`.
     pub fn new(app: &str, work: WorkTracker) -> Shell {
         Shell {
             inner: Arc::new(Inner {
@@ -130,10 +134,12 @@ impl Shell {
     }
 
     /// Pede o não perturbe, com o motivo `reason`.
+    ///
+    /// Enquanto ele estiver pedido, o serviço não sai por ociosidade (o shell o
+    /// desligaria quando a conexão fecha).
     pub fn dnd_request(&self, reason: &str) {
-        let reason = reason.to_string();
-        self.inner.desired.send_if_modified(|d| {
-            let new = Some(reason);
+        let new = Some(reason.to_string());
+        self.update(|d| {
             let changed = d.dnd != new;
             d.dnd = new;
             changed
@@ -142,9 +148,7 @@ impl Shell {
 
     /// Devolve o não perturbe.
     pub fn dnd_release(&self) {
-        self.inner
-            .desired
-            .send_if_modified(|d| d.dnd.take().is_some());
+        self.update(|d| d.dnd.take().is_some());
     }
 
     /// Pede ao shell para abrir a TUI do app com `args`. Sem shell, some.
@@ -164,17 +168,26 @@ impl Shell {
     }
 
     fn update_bar(&self, f: impl FnOnce(&mut BTreeMap<String, BarItem>)) {
-        // O guarda e o desejado mudam juntos, sob a mesma trava.
-        let mut guard = lock(&self.inner.guard);
-        self.inner.desired.send_if_modified(|d| {
+        self.update(|d| {
             let before = d.bar.clone();
             f(&mut d.bar);
             d.bar != before
         });
-        let empty = self.inner.desired.borrow().bar.is_empty();
-        match (empty, guard.is_some()) {
-            (false, false) => *guard = Some(self.inner.work.hold()),
-            (true, true) => *guard = None,
+    }
+
+    /// Muda o desejado com `f` (que diz se mudou) e segura o trabalho pendente
+    /// enquanto houver item na barra ou não perturbe pedido.
+    fn update(&self, f: impl FnOnce(&mut Desired) -> bool) {
+        // O guarda e o desejado mudam juntos, sob a mesma trava.
+        let mut guard = lock(&self.inner.guard);
+        self.inner.desired.send_if_modified(f);
+        let busy = {
+            let d = self.inner.desired.borrow();
+            !d.bar.is_empty() || d.dnd.is_some()
+        };
+        match (busy, guard.is_some()) {
+            (true, false) => *guard = Some(self.inner.work.hold()),
+            (false, true) => *guard = None,
             _ => {}
         }
     }

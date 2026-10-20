@@ -59,7 +59,8 @@ impl ServiceBuilder {
 
     /// Os pedidos ao shell (barra, não perturbe, TUI, painel).
     ///
-    /// Os itens da barra contam como trabalho pendente em [`work`](Self::work).
+    /// Os itens da barra e o não perturbe pedido contam como trabalho pendente
+    /// em [`work`](Self::work).
     /// A conexão ao `shell.sock` existe enquanto o serviço roda.
     pub fn shell(&self) -> Shell {
         self.shell.clone()
