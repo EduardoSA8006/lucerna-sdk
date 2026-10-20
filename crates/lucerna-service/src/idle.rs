@@ -81,7 +81,13 @@ pub async fn wait_idle(
             }
         };
         tokio::select! {
-            _ = sleep => return,
+            _ = sleep => {
+                // Confere de novo: uma conexão ou um trabalho pode ter chegado
+                // no mesmo instante em que o prazo venceu.
+                if *connections.borrow() == 0 && *work.borrow() == 0 {
+                    return;
+                }
+            }
             r = connections.changed(), if conns_open => conns_open = r.is_ok(),
             r = work.changed(), if work_open => work_open = r.is_ok(),
         }

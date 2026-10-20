@@ -9,6 +9,8 @@ fn listen_fds_rules() {
     assert_eq!(listen_fds(Some("41"), Some("1"), 42), 0);
     assert_eq!(listen_fds(None, Some("1"), 42), 0);
     assert_eq!(listen_fds(Some("42"), Some("x"), 42), 0);
+    assert_eq!(listen_fds(Some("42"), Some("0"), 42), 0);
+    assert_eq!(listen_fds(Some("42"), Some("2"), 42), 2);
 }
 
 #[tokio::test]
@@ -74,4 +76,28 @@ fn manual_bind_does_not_delete_a_regular_file() {
     std::fs::write(&p, b"nao sou um socket").unwrap();
     assert!(bind_manual(&p).is_err());
     assert!(p.exists());
+}
+
+#[test]
+fn manual_bind_twice_refuses_the_second() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("run").join("lucerna").join("hello.sock");
+    let (_l, _guard) = bind_manual(&p).unwrap();
+    let err = bind_manual(&p).unwrap_err();
+    assert!(matches!(&err, ServiceError::AlreadyRunning(q) if *q == p));
+    assert!(p.exists(), "o socket do primeiro continua lá");
+}
+
+#[test]
+fn manual_bind_lock_held_by_another_refuses() {
+    // Outro processo subindo: o lock está com ele, o socket ainda nem existe.
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("hello.sock");
+    let lock = std::fs::File::create(t.path().join("hello.lock")).unwrap();
+    lock.lock().unwrap();
+    let err = bind_manual(&p).unwrap_err();
+    assert!(matches!(err, ServiceError::AlreadyRunning(_)));
+    assert!(!p.exists());
+    drop(lock);
+    assert!(bind_manual(&p).is_ok());
 }

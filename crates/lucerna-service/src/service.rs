@@ -68,29 +68,50 @@ impl ServiceBuilder {
         let paths = AppPaths::new(&self.app, &env)?;
         let (listener, activation) = listener_from_env(&paths)?;
         let shell = shell_socket(&env).ok();
-        let r = self.run_with(listener, shell).await;
+        // Os sinais são registrados só aqui: o `run_with` não mexe no
+        // tratamento de SIGTERM/SIGINT do processo.
+        let mut term = signal(SignalKind::terminate())?;
+        let mut int = signal(SignalKind::interrupt())?;
+        let stop = async move {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = int.recv() => {}
+            }
+        };
+        let r = self.serve_until(listener, shell, stop).await;
         drop(activation); // o socket à mão some só depois de parar de atender
         r
     }
 
-    /// Roda o serviço em `listener` até a ociosidade ou `SIGTERM`/`SIGINT`.
+    /// Roda o serviço em `listener` até a ociosidade.
     ///
-    /// `shell_socket` ainda não é usado.
+    /// Não trata sinais (isso é do [`run`](Self::run)); para parar antes, largue
+    /// o future. `shell_socket` ainda não é usado.
     pub async fn run_with(
         self,
         listener: tokio::net::UnixListener,
         shell_socket: Option<PathBuf>,
     ) -> Result<(), ServiceError> {
+        self.serve_until(listener, shell_socket, std::future::pending())
+            .await
+    }
+
+    async fn serve_until(
+        self,
+        listener: tokio::net::UnixListener,
+        shell_socket: Option<PathBuf>,
+        stop: impl Future<Output = ()>,
+    ) -> Result<(), ServiceError> {
         let _ = shell_socket;
-        let mut term = signal(SignalKind::terminate())?;
-        let mut int = signal(SignalKind::interrupt())?;
         let server = self.server.build();
         let idle = wait_idle(server.connections(), self.work.watch(), self.idle);
         tokio::select! {
+            // `biased`: um cliente que já está na fila do `accept` é aceito (e
+            // contado) antes de a ociosidade ser conferida no mesmo despertar.
+            biased;
             r = server.serve(listener) => r.map_err(ServiceError::Io),
             _ = idle => Ok(()),
-            _ = term.recv() => Ok(()),
-            _ = int.recv() => Ok(()),
+            _ = stop => Ok(()),
         }
     }
 }

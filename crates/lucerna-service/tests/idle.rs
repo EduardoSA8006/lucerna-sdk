@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::pin;
+use std::task::Poll;
 use std::time::Duration;
 
 use lucerna_service::idle::{WorkTracker, wait_idle};
@@ -57,4 +60,32 @@ async fn closed_senders_do_not_spin() {
     let t0 = Instant::now();
     wait_idle(cr, w.watch(), Duration::from_secs(60)).await;
     assert_eq!(t0.elapsed(), Duration::from_secs(60));
+}
+
+/// Faz um `poll` só no future e diz se ele terminou.
+async fn poll_once(f: std::pin::Pin<&mut impl Future<Output = ()>>) -> bool {
+    let mut f = Some(f);
+    std::future::poll_fn(|cx| Poll::Ready(f.take().unwrap().poll(cx).is_ready())).await
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_at_the_deadline_is_not_dropped() {
+    // A conexão sobe no mesmo instante em que o prazo vence, antes de o
+    // `wait_idle` rodar de novo: ele tem de ver o 1 e continuar esperando.
+    let (c, cr) = watch::channel(0usize);
+    let w = WorkTracker::new();
+    let t0 = Instant::now();
+    let mut idle = pin!(wait_idle(cr, w.watch(), Duration::from_secs(60)));
+    assert!(!poll_once(idle.as_mut()).await);
+    tokio::time::advance(Duration::from_secs(60)).await;
+    c.send(1).unwrap();
+    assert!(
+        !poll_once(idle.as_mut()).await,
+        "não sai com a conexão nova"
+    );
+    tokio::time::advance(Duration::from_secs(600)).await;
+    assert!(!poll_once(idle.as_mut()).await);
+    c.send(0).unwrap();
+    idle.await;
+    assert_eq!(t0.elapsed(), Duration::from_secs(720));
 }
