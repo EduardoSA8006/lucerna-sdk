@@ -6,6 +6,7 @@ use lucerna_paths::Env;
 use lucerna_service::testing::FakeScheduler;
 use lucerna_service::{
     ScheduleError, Scheduler, SystemdScheduler, TimerSpec, calendar_utc, render_timer,
+    timer_unit_name,
 };
 
 fn spec(name: &str, at_unix: u64, persistent: bool) -> TimerSpec {
@@ -46,15 +47,16 @@ fn now() -> u64 {
         .as_secs()
 }
 
-/// Um `systemctl` falso que registra os argumentos em `dir/log` e depois roda
-/// `body`.
-fn script(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
+/// Um `systemctl` falso: registra os argumentos em `dir/log`, responde
+/// `load_state` ao `show` e depois roda `body`.
+fn script_with(dir: &Path, load_state: &str, body: &str) -> (PathBuf, PathBuf) {
     let log = dir.join("log");
     let bin = dir.join("systemctl");
     std::fs::write(
         &bin,
         format!(
-            "#!/bin/sh\n[ \"$1\" = __probe ] && exit 0\necho \"$@\" >> '{}'\n{body}",
+            "#!/bin/sh\n[ \"$1\" = __probe ] && exit 0\necho \"$@\" >> '{}'\n\
+             if [ \"$2\" = show ]; then echo {load_state}; fi\n{body}",
             log.display()
         ),
     )
@@ -62,6 +64,10 @@ fn script(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     wait_executable(&bin);
     (bin, log)
+}
+
+fn script(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
+    script_with(dir, "loaded", body)
 }
 
 /// Com os testes em paralelo, um `fork` de outra thread pode herdar por um
@@ -93,21 +99,36 @@ fn env_in(dir: &Path) -> Env {
     }
 }
 
-const UNIT: &str = "lucerna-routine-lembrete.timer";
+const UNIT: &str = "lucerna-routine_lembrete.timer";
+const SHOW: &str = "--user show -p LoadState --value lucerna-routine.service\n";
+
+fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap()
+}
+
+fn scheduler(t: &Path, bin: PathBuf) -> SystemdScheduler {
+    SystemdScheduler::new("routine", &env_in(t))
+        .unwrap()
+        .with_systemctl(bin)
+}
+
+#[test]
+fn unit_names_do_not_collide() {
+    assert_eq!(timer_unit_name("routine", "lembrete"), UNIT);
+    assert_ne!(timer_unit_name("a-b", "c"), timer_unit_name("a", "b-c"));
+}
 
 #[test]
 fn persistent_schedule_writes_config_unit_and_enables() {
     let t = tempfile::tempdir().unwrap();
     let (bin, log) = fake_systemctl(t.path());
-    let s = SystemdScheduler::new("routine", &env_in(t.path()))
-        .unwrap()
-        .with_systemctl(bin);
+    let s = scheduler(t.path(), bin);
     s.schedule(&spec("lembrete", now() + 3600, true)).unwrap();
     assert!(t.path().join("config/systemd/user").join(UNIT).exists());
     assert!(!t.path().join("run/systemd/user").join(UNIT).exists());
     assert_eq!(
-        std::fs::read_to_string(&log).unwrap(),
-        format!("--user daemon-reload\n--user enable {UNIT}\n--user restart {UNIT}\n")
+        read(&log),
+        format!("{SHOW}--user daemon-reload\n--user enable {UNIT}\n--user restart {UNIT}\n")
     );
 }
 
@@ -115,25 +136,19 @@ fn persistent_schedule_writes_config_unit_and_enables() {
 fn runtime_schedule_and_cancel() {
     let t = tempfile::tempdir().unwrap();
     let (bin, log) = fake_systemctl(t.path());
-    let s = SystemdScheduler::new("routine", &env_in(t.path()))
-        .unwrap()
-        .with_systemctl(bin);
+    let s = scheduler(t.path(), bin);
     s.schedule(&spec("lembrete", now() + 3600, false)).unwrap();
     let file = t.path().join("run/systemd/user").join(UNIT);
     assert!(file.exists());
     assert!(!t.path().join("config/systemd/user").join(UNIT).exists());
-    assert!(
-        !std::fs::read_to_string(&file)
-            .unwrap()
-            .contains("Persistent")
-    );
+    assert!(!read(&file).contains("Persistent"));
     assert_eq!(
-        std::fs::read_to_string(&log).unwrap(),
-        format!("--user daemon-reload\n--user restart {UNIT}\n")
+        read(&log),
+        format!("{SHOW}--user daemon-reload\n--user restart {UNIT}\n")
     );
     s.cancel("lembrete").unwrap();
     assert!(!file.exists());
-    let l = std::fs::read_to_string(&log).unwrap();
+    let l = read(&log);
     assert!(
         l.ends_with(&format!(
             "--user disable --now {UNIT}\n--user daemon-reload\n"
@@ -143,41 +158,74 @@ fn runtime_schedule_and_cancel() {
 }
 
 #[test]
+fn cancel_persistent_removes_config_file() {
+    let t = tempfile::tempdir().unwrap();
+    let (bin, log) = fake_systemctl(t.path());
+    let s = scheduler(t.path(), bin);
+    s.schedule(&spec("lembrete", now() + 3600, true)).unwrap();
+    let file = t.path().join("config/systemd/user").join(UNIT);
+    assert!(file.exists());
+    s.cancel("lembrete").unwrap();
+    assert!(!file.exists());
+    assert!(read(&log).ends_with(&format!(
+        "--user disable --now {UNIT}\n--user daemon-reload\n"
+    )));
+}
+
+#[test]
 fn rescheduling_changes_the_time() {
     let t = tempfile::tempdir().unwrap();
     let (bin, log) = fake_systemctl(t.path());
-    let s = SystemdScheduler::new("routine", &env_in(t.path()))
-        .unwrap()
-        .with_systemctl(bin);
+    let s = scheduler(t.path(), bin);
     let n = now();
     s.schedule(&spec("lembrete", n + 3600, true)).unwrap();
     s.schedule(&spec("lembrete", n + 7200, true)).unwrap();
-    let unit = std::fs::read_to_string(t.path().join("config/systemd/user").join(UNIT)).unwrap();
+    let unit = read(&t.path().join("config/systemd/user").join(UNIT));
     assert!(unit.contains(&format!("OnCalendar={}\n", calendar_utc(n + 7200))));
     assert!(!unit.contains(&calendar_utc(n + 3600)));
-    let once = format!("--user daemon-reload\n--user enable {UNIT}\n--user restart {UNIT}\n");
+    let once = format!("{SHOW}--user daemon-reload\n--user enable {UNIT}\n--user restart {UNIT}\n");
+    assert_eq!(read(&log), format!("{once}{once}"));
+}
+
+#[test]
+fn switching_persistence_moves_the_file() {
+    let t = tempfile::tempdir().unwrap();
+    let (bin, log) = fake_systemctl(t.path());
+    let s = scheduler(t.path(), bin);
+    let config = t.path().join("config/systemd/user").join(UNIT);
+    let run = t.path().join("run/systemd/user").join(UNIT);
+    s.schedule(&spec("lembrete", now() + 3600, true)).unwrap();
+    std::fs::remove_file(&log).unwrap();
+    // Persistente → não persistente: o de `config` venceria o de `run`.
+    s.schedule(&spec("lembrete", now() + 3600, false)).unwrap();
+    assert!(!config.exists());
+    assert!(run.exists());
     assert_eq!(
-        std::fs::read_to_string(&log).unwrap(),
-        format!("{once}{once}")
+        read(&log),
+        format!("{SHOW}--user disable {UNIT}\n--user daemon-reload\n--user restart {UNIT}\n")
     );
+    // E de volta: o de `run` some.
+    s.schedule(&spec("lembrete", now() + 3600, true)).unwrap();
+    assert!(config.exists());
+    assert!(!run.exists());
 }
 
 #[test]
 fn refuses_past_times_and_bad_names() {
     let t = tempfile::tempdir().unwrap();
     let (bin, log) = fake_systemctl(t.path());
-    let s = SystemdScheduler::new("routine", &env_in(t.path()))
-        .unwrap()
-        .with_systemctl(bin);
-    assert!(matches!(
-        s.schedule(&spec("lembrete", 1, true)),
-        Err(ScheduleError::InPast)
-    ));
-    assert!(matches!(
-        s.schedule(&spec("lembrete", now(), false)),
-        Err(ScheduleError::InPast)
-    ));
-    for bad in ["Lembrete", "a/b", "", "-a", &"a".repeat(33)] {
+    let s = scheduler(t.path(), bin);
+    // Agora e agora + 1 contam como passado (1 s de margem).
+    for at in [1, now(), now() + 1] {
+        assert!(
+            matches!(
+                s.schedule(&spec("lembrete", at, false)),
+                Err(ScheduleError::InPast)
+            ),
+            "{at}"
+        );
+    }
+    for bad in ["Lembrete", "a/b", "a_b", "", "-a", &"a".repeat(33)] {
         assert!(
             matches!(
                 s.schedule(&spec(bad, now() + 3600, true)),
@@ -215,12 +263,29 @@ fn missing_runtime_dir_is_reported() {
 }
 
 #[test]
+fn service_not_installed_writes_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    let (bin, log) = script_with(t.path(), "not-found", "");
+    let s = scheduler(t.path(), bin);
+    for persistent in [true, false] {
+        match s.schedule(&spec("lembrete", now() + 3600, persistent)) {
+            Err(e @ ScheduleError::ServiceNotInstalled(_)) => assert_eq!(
+                e.to_string(),
+                "O serviço lucerna-routine.service não está instalado."
+            ),
+            other => panic!("esperava ServiceNotInstalled, veio {other:?}"),
+        }
+    }
+    assert_eq!(read(&log), format!("{SHOW}{SHOW}"));
+    assert!(!t.path().join("config/systemd").exists());
+    assert!(!t.path().join("run/systemd").exists());
+}
+
+#[test]
 fn systemctl_failure_is_reported() {
     let t = tempfile::tempdir().unwrap();
     let (bin, _log) = script(t.path(), "echo falhou >&2\nexit 3\n");
-    let s = SystemdScheduler::new("routine", &env_in(t.path()))
-        .unwrap()
-        .with_systemctl(bin);
+    let s = scheduler(t.path(), bin);
     match s.schedule(&spec("lembrete", now() + 3600, true)) {
         Err(ScheduleError::Systemctl {
             args,
@@ -228,11 +293,37 @@ fn systemctl_failure_is_reported() {
             stderr,
         }) => {
             assert_eq!(status, Some(3));
-            assert_eq!(args, "--user daemon-reload");
+            assert_eq!(args, SHOW.trim_end());
             assert!(stderr.contains("falhou"), "{stderr}");
         }
         other => panic!("esperava Systemctl, veio {other:?}"),
     }
+    assert!(!t.path().join("config/systemd/user").join(UNIT).exists());
+}
+
+#[test]
+fn failure_midway_is_rolled_back() {
+    let t = tempfile::tempdir().unwrap();
+    let (bin, log) = script(
+        t.path(),
+        "[ \"$2\" = restart ] && { echo restart falhou >&2; exit 4; }\nexit 0\n",
+    );
+    let s = scheduler(t.path(), bin);
+    match s.schedule(&spec("lembrete", now() + 3600, true)) {
+        Err(ScheduleError::Systemctl { args, status, .. }) => {
+            assert_eq!(status, Some(4));
+            assert_eq!(args, format!("--user restart {UNIT}"));
+        }
+        other => panic!("esperava Systemctl, veio {other:?}"),
+    }
+    assert!(!t.path().join("config/systemd/user").join(UNIT).exists());
+    assert_eq!(
+        read(&log),
+        format!(
+            "{SHOW}--user daemon-reload\n--user enable {UNIT}\n--user restart {UNIT}\n\
+             --user disable --now {UNIT}\n--user daemon-reload\n"
+        )
+    );
 }
 
 #[test]
@@ -273,7 +364,7 @@ impl Drop for RealCleanup {
             .args(["--user", "daemon-reload"])
             .status();
         let _ = Command::new("systemctl")
-            .args(["--user", "reset-failed", "lucerna-sdktest-teste.timer"])
+            .args(["--user", "reset-failed", "lucerna-sdktest_teste.timer"])
             .status();
     }
 }
@@ -283,7 +374,7 @@ impl Drop for RealCleanup {
 fn real_systemd_round_trip() {
     let env = Env::from_process();
     let s = SystemdScheduler::new("sdktest", &env).unwrap();
-    let unit = "lucerna-sdktest-teste.timer";
+    let unit = "lucerna-sdktest_teste.timer";
     // O systemd recusa ligar um timer cujo serviço não está carregado: um
     // `lucerna-sdktest.service` de mentira, só nesta sessão.
     let dir = env.xdg_runtime_dir.clone().unwrap().join("systemd/user");

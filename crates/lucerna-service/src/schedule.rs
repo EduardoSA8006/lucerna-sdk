@@ -1,17 +1,30 @@
 //! Timers agendados pelo systemd do usuário.
 //!
 //! O app pede "me acorde em tal horário" com um [`TimerSpec`]; o
-//! [`SystemdScheduler`] escreve um `lucerna-<app>-<nome>.timer` e o liga com
+//! [`SystemdScheduler`] escreve um `lucerna-<app>_<nome>.timer` e o liga com
 //! `systemctl --user`. Quando dispara, o timer sobe `lucerna-<app>.service`: o
 //! app confere o trabalho vencido ao subir e chama [`Scheduler::cancel`] depois
 //! de fazê-lo (um `OnCalendar` com data fixa não volta a disparar, mas o
 //! arquivo ficaria).
+//!
+//! **O `lucerna-<app>.service` precisa estar instalado**: o systemd recusa
+//! ligar um timer cujo serviço não carrega, e o [`SystemdScheduler`] confere
+//! isso antes de escrever qualquer coisa
+//! ([`ScheduleError::ServiceNotInstalled`]).
 //!
 //! - Persistente: o arquivo vai para `$XDG_CONFIG_HOME/systemd/user/` com
 //!   `Persistent=true` e é habilitado (`enable`), então sobrevive ao reinício e
 //!   dispara ao voltar se o horário passou com a máquina desligada.
 //! - Não persistente: o arquivo vai para `$XDG_RUNTIME_DIR/systemd/user/` e
 //!   some quando a sessão acaba.
+//!
+//! As pastas saem do [`Env`] do app, mas quem as procura é o systemd, que lê o
+//! `XDG_CONFIG_HOME` e o `XDG_RUNTIME_DIR` do ambiente **dele**: os dois
+//! precisam concordar (é o caso normal, com as variáveis padrão da sessão).
+//!
+//! Trocar um timer de persistente para não persistente (ou o contrário) com o
+//! mesmo nome apaga o arquivo da outra pasta; o de `$XDG_CONFIG_HOME` teria
+//! prioridade sobre o de `$XDG_RUNTIME_DIR`.
 //!
 //! As chamadas usam [`std::process::Command`] e bloqueiam até o `systemctl`
 //! terminar; dentro do `tokio`, chame de `tokio::task::spawn_blocking`.
@@ -40,6 +53,12 @@ pub struct TimerSpec {
 /// Quem agenda os timers de um app.
 pub trait Scheduler: Send + Sync {
     /// Agenda (ou reagenda) o timer `spec.name` para `spec.at_unix`.
+    ///
+    /// O horário precisa estar ao menos 2 s no futuro (`at_unix > agora + 1`),
+    /// senão [`ScheduleError::InPast`]: o app faz na hora o que já venceu. O
+    /// `lucerna-<app>.service` precisa estar instalado. Se a chamada falhar ao
+    /// reagendar, o timer fica sem horário (o antigo foi desfeito): o app
+    /// tenta de novo ou faz o trabalho na hora.
     fn schedule(&self, spec: &TimerSpec) -> Result<(), ScheduleError>;
     /// Tira o timer `name`; não é erro se ele não existir.
     fn cancel(&self, name: &str) -> Result<(), ScheduleError>;
@@ -53,9 +72,12 @@ pub enum ScheduleError {
         "Nome de timer inválido: \"{0}\" (use a-z, 0-9 e \"-\", sem começar por \"-\", até 32)."
     )]
     InvalidName(String),
-    /// O horário pedido já passou.
+    /// O horário pedido já passou (ou vence em menos de 2 s).
     #[error("O horário pedido já passou.")]
     InPast,
+    /// O `lucerna-<app>.service` não está instalado (o argumento é a unidade).
+    #[error("O serviço {0} não está instalado.")]
+    ServiceNotInstalled(String),
     /// Um caminho XDG que falta ou é inválido (ou o id do app).
     #[error("{0}")]
     NoDir(#[from] PathsError),
@@ -118,9 +140,10 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// `lucerna-<app>-<name>.timer`.
+/// `lucerna-<app>_<name>.timer`. O `_` não aparece no id do app nem no nome
+/// do timer, então dois pares diferentes nunca dão a mesma unidade.
 pub fn timer_unit_name(app: &str, name: &str) -> String {
-    format!("lucerna-{app}-{name}.timer")
+    format!("lucerna-{app}_{name}.timer")
 }
 
 /// O conteúdo do arquivo `.timer`.
@@ -165,33 +188,57 @@ impl SystemdScheduler {
 
     /// `$XDG_CONFIG_HOME/systemd/user` (ou `$HOME/.config/systemd/user`).
     fn persistent_dir(&self) -> Result<PathBuf, PathsError> {
-        let abs = |p: &Option<PathBuf>| p.clone().filter(|p| p.is_absolute());
-        let config = match abs(&self.env.xdg_config_home) {
-            Some(p) => p,
-            None => abs(&self.env.home)
-                .ok_or(PathsError::NoHome)?
-                .join(".config"),
-        };
-        Ok(config.join("systemd/user"))
+        Ok(self.env.config_home()?.join("systemd/user"))
     }
 
     /// `$XDG_RUNTIME_DIR/systemd/user`.
     fn runtime_dir(&self) -> Result<PathBuf, PathsError> {
-        self.env
-            .xdg_runtime_dir
-            .clone()
-            .filter(|p| p.is_absolute())
-            .map(|p| p.join("systemd/user"))
-            .ok_or(PathsError::NoRuntimeDir)
+        Ok(self.env.runtime_dir()?.join("systemd/user"))
     }
 
-    fn systemctl(&self, args: &[&str]) -> Result<(), ScheduleError> {
+    fn dir(&self, persistent: bool) -> Result<PathBuf, PathsError> {
+        if persistent {
+            self.persistent_dir()
+        } else {
+            self.runtime_dir()
+        }
+    }
+
+    /// `lucerna-<app>.service`.
+    fn service_unit(&self) -> String {
+        format!("lucerna-{}.service", self.app)
+    }
+
+    /// Confere com `systemctl --user show` que o serviço do app carrega.
+    fn check_service(&self) -> Result<(), ScheduleError> {
+        let service = self.service_unit();
+        let out = self.systemctl(&["show", "-p", "LoadState", "--value", &service])?;
+        if out.trim() == "loaded" {
+            Ok(())
+        } else {
+            Err(ScheduleError::ServiceNotInstalled(service))
+        }
+    }
+
+    /// Escreve o arquivo e liga o timer; `file` já está na pasta certa.
+    fn install(&self, spec: &TimerSpec, unit: &str, file: &Path) -> Result<(), ScheduleError> {
+        std::fs::write(file, render_timer(&self.app, spec))?;
+        self.systemctl(&["daemon-reload"])?;
+        if spec.persistent {
+            self.systemctl(&["enable", unit])?;
+        }
+        self.systemctl(&["restart", unit])?;
+        Ok(())
+    }
+
+    /// Roda `systemctl --user <args>` e devolve o stdout.
+    fn systemctl(&self, args: &[&str]) -> Result<String, ScheduleError> {
         let out = Command::new(&self.systemctl)
             .arg("--user")
             .args(args.iter().map(OsStr::new))
             .output()?;
         if out.status.success() {
-            return Ok(());
+            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
         }
         let mut joined = String::from("--user");
         for a in args {
@@ -222,22 +269,32 @@ fn now_unix() -> u64 {
 impl Scheduler for SystemdScheduler {
     fn schedule(&self, spec: &TimerSpec) -> Result<(), ScheduleError> {
         validate_name(&spec.name)?;
-        if spec.at_unix <= now_unix() {
+        if spec.at_unix <= now_unix().saturating_add(1) {
             return Err(ScheduleError::InPast);
         }
-        let dir = if spec.persistent {
-            self.persistent_dir()?
-        } else {
-            self.runtime_dir()?
-        };
-        std::fs::create_dir_all(&dir)?;
+        let dir = self.dir(spec.persistent)?;
+        self.check_service()?;
         let unit = timer_unit_name(&self.app, &spec.name);
-        std::fs::write(dir.join(&unit), render_timer(&self.app, spec))?;
-        self.systemctl(&["daemon-reload"])?;
-        if spec.persistent {
-            self.systemctl(&["enable", &unit])?;
+        // A outra pasta: um arquivo velho lá venceria (o de `config`) ou
+        // sobraria (o de `run`).
+        if let Ok(other) = self.dir(!spec.persistent) {
+            let old = other.join(&unit);
+            if old.exists() {
+                if !spec.persistent {
+                    let _ = self.systemctl(&["disable", &unit]);
+                }
+                remove_if_exists(&old)?;
+            }
         }
-        self.systemctl(&["restart", &unit])
+        std::fs::create_dir_all(&dir)?;
+        let file = dir.join(&unit);
+        self.install(spec, &unit, &file).inspect_err(|_| {
+            // Melhor esforço: não deixar nada meio ligado; o erro devolvido é
+            // o original.
+            let _ = self.systemctl(&["disable", "--now", &unit]);
+            let _ = remove_if_exists(&file);
+            let _ = self.systemctl(&["daemon-reload"]);
+        })
     }
 
     fn cancel(&self, name: &str) -> Result<(), ScheduleError> {
@@ -251,6 +308,7 @@ impl Scheduler for SystemdScheduler {
         {
             remove_if_exists(&dir.join(&unit))?;
         }
-        self.systemctl(&["daemon-reload"])
+        self.systemctl(&["daemon-reload"])?;
+        Ok(())
     }
 }
