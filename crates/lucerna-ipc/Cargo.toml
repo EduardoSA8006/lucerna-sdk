@@ -1,0 +1,21 @@
+[package]
+name = "lucerna-ipc"
+description = "Enquadramento por linha, servidor e cliente do protocolo do Lucerna sobre socket Unix."
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+lucerna-protocol.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
