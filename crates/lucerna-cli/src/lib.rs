@@ -14,6 +14,8 @@ pub mod render;
 /// O `clap` desta versão, para o app declarar os subcomandos sem depender dele
 /// direto (e sem descasar a versão).
 pub use clap;
+/// O ambiente (pastas XDG) que [`CliApp::run`] usa para achar o socket.
+pub use lucerna_paths::Env;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -23,7 +25,7 @@ use std::time::Duration;
 use clap::error::ErrorKind;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use lucerna_ipc::{Client, ClientError};
-use lucerna_paths::{AppPaths, Env};
+use lucerna_paths::AppPaths;
 use lucerna_protocol::{RpcError, State, codes};
 use serde_json::{Map, Value};
 
@@ -322,6 +324,15 @@ impl CliApp {
             RunKind::Status => self.status(&client, run.json, out, err).await,
             RunKind::Watch(topic) => self.watch(client, &topic, run.json, out, err).await,
         }
+    }
+
+    /// Como [`CliApp::run`], com o ambiente do processo ([`Env::from_process`]),
+    /// a saída no stdout e os erros no stderr: o que o `main` de um app usa.
+    pub async fn run_from_env(&self, run: CliRun) -> i32 {
+        let mut out = std::io::stdout();
+        let mut err = std::io::stderr();
+        self.run(run, &Env::from_process(), &mut out, &mut err)
+            .await
     }
 
     async fn status(

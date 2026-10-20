@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use lucerna_cli::clap::{Arg, Command, value_parser};
 use lucerna_cli::{Call, CliApp, CliCommand};
-use lucerna_ipc::Topic;
-use lucerna_service::{BarItem, RpcError, ServiceBuilder, Shell};
+use lucerna_service::{BarItem, RpcError, ServiceBuilder, Shell, Topic};
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;

@@ -18,6 +18,9 @@ use std::path::PathBuf;
 
 use lucerna_paths::PathsError;
 
+/// O servidor do protocolo e os tópicos, para o app declarar o que oferece
+/// sem depender do `lucerna-ipc` direto.
+pub use lucerna_ipc::{ServerBuilder, Topic, TopicKind};
 /// Tipos do protocolo que os apps usam com o serviço.
 pub use lucerna_protocol::{BarItem, RpcError};
 

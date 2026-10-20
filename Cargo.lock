@@ -202,7 +202,6 @@ dependencies = [
  "lucerna-cli",
  "lucerna-ipc",
  "lucerna-manifest",
- "lucerna-paths",
  "lucerna-service",
  "serde_json",
  "tempfile",

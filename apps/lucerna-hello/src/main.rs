@@ -7,7 +7,6 @@ use std::process::ExitCode;
 
 use lucerna_cli::{Invocation, usage_exit};
 use lucerna_hello::{cli, hello};
-use lucerna_paths::Env;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -21,11 +20,7 @@ async fn main() -> ExitCode {
             let _producer = h.producer;
             report(h.service.run().await)
         }
-        Ok(Invocation::Cli(run)) => {
-            let mut out = std::io::stdout();
-            let mut err = std::io::stderr();
-            cli.run(run, &Env::from_process(), &mut out, &mut err).await
-        }
+        Ok(Invocation::Cli(run)) => cli.run_from_env(run).await,
         Err(e) => usage_exit(&e),
     };
     ExitCode::from(u8::try_from(code).unwrap_or(1))

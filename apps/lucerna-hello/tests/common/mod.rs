@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use lucerna_hello::{Producer, hello};
+use lucerna_ipc::Client;
 use lucerna_ipc::raw::RawConn;
-use lucerna_ipc::{Client, Topic};
+use lucerna_service::Topic;
 use tempfile::TempDir;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
