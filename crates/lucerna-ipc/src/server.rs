@@ -171,8 +171,11 @@ impl Server {
             tokio::select! {
                 r = listener.accept() => match r {
                     Ok((stream, _)) => {
+                        // Conta a conexão já no `accept`: entre ele e a primeira
+                        // rodada da tarefa ninguém a vê como zero.
+                        let count = ConnectionCount::new(self.inner.clone());
                         let server = self.clone();
-                        conns.spawn(async move { server.serve_connection(stream).await });
+                        conns.spawn(async move { server.serve_counted(stream, count).await });
                     }
                     Err(e) => match e.kind() {
                         io::ErrorKind::ConnectionAborted
@@ -198,7 +201,15 @@ impl Server {
     where
         S: AsyncRead + AsyncWrite + Send + 'static,
     {
-        let _count = ConnectionCount::new(self.inner.clone());
+        let count = ConnectionCount::new(self.inner.clone());
+        self.serve_counted(stream, count).await
+    }
+
+    /// Atende uma conexão já contada; o contador cai quando ela fecha.
+    async fn serve_counted<S>(&self, stream: S, _count: ConnectionCount)
+    where
+        S: AsyncRead + AsyncWrite + Send + 'static,
+    {
         let (rd, wr) = tokio::io::split(stream);
         let (resp_tx, resp_rx) = mpsc::channel(RESPONSE_QUEUE);
         let (dirty_tx, dirty_rx) = mpsc::channel(1);
