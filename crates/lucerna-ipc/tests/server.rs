@@ -518,38 +518,92 @@ async fn half_close_still_gets_the_slow_response() {
     assert_eq!(got[1]["result"], json!({}));
 }
 
+/// Regressão: um `publish` no meio do `subscribe`, com várias threads, não pode
+/// apagar o retrato que a tarefa nova da assinatura já deixou no mapa pendente.
+///
+/// A conexão roda fora dos workers (`Handle::block_on` numa thread própria). Assim a
+/// tarefa da assinatura vai para a fila global e um worker livre pode rodá-la em
+/// paralelo com o resto do `subscribe`. Dentro de um worker, ela iria para o slot LIFO
+/// (que não é roubado) e só rodaria depois. O `publish` sai assim que o assinante é
+/// contado, isto é, no meio do `subscribe`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subscribe_racing_publish_always_gets_the_last_seq() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let mut b = ServerBuilder::new("demo", "0.1.0");
     let ticks = b.stream("ticks");
-    let (_t, p, _s) = start(b).await;
-    for round in 0..200 {
-        let mut c = ready(&p).await;
-        let publisher = tokio::spawn({
-            let ticks = ticks.clone();
-            async move {
-                for k in 0..20 {
-                    ticks.publish(json!({ "k": k }));
-                    tokio::task::yield_now().await;
-                }
+    let server = b.build();
+    let handle = tokio::runtime::Handle::current();
+
+    // Workers acordados, olhando a fila global com frequência.
+    let stop = Arc::new(AtomicBool::new(false));
+    for _ in 0..3 {
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            while !stop.load(Ordering::Relaxed) {
+                tokio::task::yield_now().await;
             }
         });
-        c.send(&req(1, "lucerna.subscribe", json!({"topics":["ticks"]})))
+    }
+
+    for round in 0..300 {
+        let (client, srv) = tokio::net::UnixStream::pair().unwrap();
+        let conn = std::thread::spawn({
+            let (s, h) = (server.clone(), handle.clone());
+            move || h.block_on(s.serve_connection(srv))
+        });
+        let publisher = std::thread::spawn({
+            let t = ticks.clone();
+            move || {
+                while t.subscribers() == 0 {
+                    std::hint::spin_loop();
+                }
+                t.publish(json!({ "round": round }));
+            }
+        });
+
+        let (rd, mut wr) = client.into_split();
+        let mut rd = LineReader::new(rd, MAX_MESSAGE);
+        for (id, m, p) in [
+            (
+                0,
+                "lucerna.hello",
+                json!({"protocol":"1.0","client":"t","app":"demo"}),
+            ),
+            (1, "lucerna.subscribe", json!({"topics":["ticks"]})),
+        ] {
+            let r = Request {
+                id: Id::Num(id),
+                method: m.into(),
+                params: Some(p),
+            };
+            write_message(&mut wr, &Message::Request(r)).await.unwrap();
+        }
+        tokio::task::spawn_blocking(move || publisher.join().unwrap())
             .await
             .unwrap();
-        publisher.await.unwrap();
         let last = ticks.current().seq;
-        let mut seen = next(&mut c).await["result"]["states"][0]["seq"]
-            .as_u64()
-            .unwrap();
-        while seen < last {
-            let r = c
-                .recv()
+
+        let mut seen = None;
+        while seen != Some(last) {
+            let line = tokio::time::timeout(Duration::from_secs(2), rd.next_line())
                 .await
-                .unwrap_or_else(|e| panic!("rodada {round}: viu {seen}, esperava {last}: {e}"))
-                .unwrap();
-            seen = r["params"]["seq"].as_u64().unwrap();
+                .unwrap_or_else(|_| panic!("rodada {round}: viu {seen:?}, esperava {last}"))
+                .unwrap()
+                .expect("conexão fechou");
+            let v: Value = serde_json::from_str(&line).unwrap();
+            if v["method"] == "lucerna.state" {
+                seen = v["params"]["seq"].as_u64();
+            } else if v["id"] == 1 {
+                seen = v["result"]["states"][0]["seq"].as_u64();
+            }
         }
-        assert_eq!(seen, last, "rodada {round}");
+
+        drop((rd, wr));
+        tokio::task::spawn_blocking(move || conn.join().unwrap())
+            .await
+            .unwrap();
     }
+    stop.store(true, Ordering::Relaxed);
 }

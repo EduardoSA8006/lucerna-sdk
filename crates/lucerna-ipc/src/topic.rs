@@ -29,6 +29,12 @@ struct Inner {
 /// [`publish`](Topic::publish): quem assina depois de um ciclo de assinatura recebe o
 /// último quadro produzido. Se o próximo assinante deve ver vazio, o app publica
 /// `null` ao parar de produzir.
+///
+/// O `seq` só cresce, mas a ordem na conexão não é garantida em volta de uma troca de
+/// assinatura: ao reassinar um tópico, ou logo depois de um `lucerna.unsubscribe`, o
+/// cliente pode receber um `lucerna.state` com `seq` menor ou igual ao que já viu (um
+/// retrato que já estava a caminho). O cliente descarta esses estados; o `Client`
+/// deste crate já faz isso.
 #[derive(Clone)]
 pub struct Topic {
     inner: Arc<Inner>,
