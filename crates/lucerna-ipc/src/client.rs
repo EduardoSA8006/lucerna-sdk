@@ -377,10 +377,18 @@ async fn read_loop(
                         && let Ok(v) = &r.outcome
                         && let Ok(s) = serde_json::from_value::<SubscribeResult>(v.clone())
                     {
+                        let mut c = lock(&calls);
                         for st in s.states {
+                            // Ao reassinar, um pendente até o `seq` do retrato
+                            // sairia depois dele: fica para trás.
+                            if c.states.get(&st.topic).is_some_and(|p| p.seq <= st.seq) {
+                                c.states.remove(&st.topic);
+                            }
                             let last = seen.entry(st.topic).or_insert(st.seq);
                             *last = (*last).max(st.seq);
                         }
+                        let Calls { states, order, .. } = &mut *c;
+                        order.retain(|t| states.contains_key(t));
                     }
                     let _ = w.tx.send(r.outcome);
                 }

@@ -255,11 +255,17 @@ async fn malformed_hello_result_is_decode_error() {
 /// Uma chamada em andamento acorda com `Closed` quando o servidor cai.
 #[tokio::test]
 async fn pending_call_wakes_with_closed_when_server_dies() {
-    let (_t, p, s) = start(demo()).await;
+    let mut b = demo();
+    // Bem mais longo que a espera do teste: só o fechamento acorda a chamada.
+    b.method("hang", |_| async {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok(json!({}))
+    });
+    let (_t, p, s) = start(b).await;
     let c = Arc::new(Client::connect(&p, "tui", "demo").await.unwrap());
     let call = tokio::spawn({
         let c = c.clone();
-        async move { c.call("slow.op", None).await }
+        async move { c.call("hang", None).await }
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     s.abort();
@@ -285,6 +291,12 @@ async fn timeouts_against_silent_server() {
 
     let (_d, path, f) = fake(|mut c| async move {
         fake_hello(&mut c, &[]).await;
+        let late = expect(&mut c, "app.x").await;
+        // Responde só depois do prazo do cliente.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        answer(&mut c, &late, json!("atrasada")).await;
+        let r = expect(&mut c, "app.x").await;
+        answer(&mut c, &r, json!("certo")).await;
         hold(c).await;
     });
     let c = Client::connect_timeout(&path, "tui", "demo", Duration::from_secs(2))
@@ -299,7 +311,43 @@ async fn timeouts_against_silent_server() {
         r => panic!("esperava Timeout, veio {r:?}"),
     }
     assert!(t0.elapsed() < Duration::from_secs(1));
+    // A resposta atrasada é ignorada e a conexão continua usável.
+    assert_eq!(
+        c.call_timeout("app.x", None, Duration::from_secs(2))
+            .await
+            .unwrap(),
+        json!("certo")
+    );
     drop(c);
+    f.await.unwrap();
+}
+
+/// Ao reassinar, um estado pendente com `seq` até o do retrato novo é
+/// descartado: o velho não sai depois do novo.
+#[tokio::test]
+async fn resubscribe_drops_pending_states_older_than_snapshot() {
+    let (_d, path, f) = fake(|mut c| async move {
+        fake_hello(&mut c, &["a", "b"]).await;
+        let sub = expect(&mut c, "lucerna.subscribe").await;
+        let st = |t: &str, seq: u64| json!({"topic": t, "seq": seq, "data": {"v": seq}});
+        answer(&mut c, &sub, json!({"states": [st("a", 0), st("b", 0)]})).await;
+        state(&mut c, "a", 3).await;
+        state(&mut c, "b", 2).await;
+        let sync = expect(&mut c, "sync").await;
+        answer(&mut c, &sync, json!({})).await;
+        let sub = expect(&mut c, "lucerna.subscribe").await;
+        answer(&mut c, &sub, json!({"states": [st("a", 5)]})).await;
+        // Fecha a conexão.
+    });
+    let mut c = Client::connect(&path, "tui", "demo").await.unwrap();
+    c.subscribe(&["a", "b"]).await.unwrap();
+    c.call("sync", None).await.unwrap();
+    let snap = c.subscribe(&["a"]).await.unwrap();
+    assert_eq!(snap[0].seq, 5);
+    // O `a` 3 saiu; o `b` 2 (outro tópico) fica.
+    let s = c.next_state().await.unwrap();
+    assert_eq!((s.topic.as_str(), s.seq), ("b", 2));
+    assert!(c.next_state().await.is_none());
     f.await.unwrap();
 }
 
