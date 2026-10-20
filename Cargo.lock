@@ -196,6 +196,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucerna-hello"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "lucerna-cli",
+ "lucerna-ipc",
+ "lucerna-manifest",
+ "lucerna-protocol",
+ "lucerna-service",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "lucerna-ipc"
 version = "0.1.0"
 dependencies = [

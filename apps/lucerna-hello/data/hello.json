@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "app": {
+    "id": "hello",
+    "name": "Olá",
+    "icon": "waving_hand",
+    "socket": "hello.sock"
+  }
+}

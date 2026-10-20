@@ -1,0 +1,8 @@
+[Unit]
+Description=Lucerna Hello (serviço de exemplo)
+Requires=lucerna-hello.socket
+After=lucerna-hello.socket
+
+[Service]
+ExecStart=/usr/bin/lucerna-hello serve
+Restart=on-failure
