@@ -35,6 +35,12 @@ struct Inner {
 /// cliente pode receber um `lucerna.state` com `seq` menor ou igual ao que já viu (um
 /// retrato que já estava a caminho). O cliente descarta esses estados; o `Client`
 /// deste crate já faz isso.
+///
+/// Comum ou contínuo, o tópico sabe quantas assinaturas tem ([`subscribers`](Topic::subscribers)),
+/// somando todas as conexões; reassinar na mesma conexão não conta de novo, e o
+/// assinante sai no `lucerna.unsubscribe` (antes da resposta) ou quando a conexão
+/// fecha. Um app pode produzir só com alguém olhando, também num tópico comum (o
+/// módulo `system` do `lucernad` faz isso).
 #[derive(Clone)]
 pub struct Topic {
     inner: Arc<Inner>,
@@ -85,14 +91,14 @@ impl Topic {
         *self.inner.subscribers.borrow()
     }
 
-    /// Volta quando o tópico tem pelo menos um assinante.
+    /// Volta quando o tópico tem pelo menos um assinante. Volta na hora se já for verdade.
     pub async fn wait_subscribed(&self) {
         let mut rx = self.inner.subscribers.subscribe();
         // O emissor vive enquanto `self` existir: o `wait_for` não falha.
         let _ = rx.wait_for(|n| *n > 0).await;
     }
 
-    /// Volta quando o tópico não tem assinantes.
+    /// Volta quando o tópico não tem assinantes. Volta na hora se já for verdade.
     pub async fn wait_unsubscribed(&self) {
         let mut rx = self.inner.subscribers.subscribe();
         let _ = rx.wait_for(|n| *n == 0).await;

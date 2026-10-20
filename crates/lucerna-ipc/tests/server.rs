@@ -328,6 +328,66 @@ async fn stream_counts_subscribers() {
 }
 
 #[tokio::test]
+async fn common_topic_counts_subscribers() {
+    let mut b = demo();
+    let seen = b.topic("seen", Value::Null);
+    let (_t, p, _s) = start(b).await;
+    assert_eq!(seen.subscribers(), 0);
+
+    let mut a = ready(&p).await;
+    a.send(&req(1, "lucerna.subscribe", json!({"topics":["seen"]})))
+        .await
+        .unwrap();
+    next(&mut a).await;
+    // A guarda conta antes da resposta: sem esperar.
+    assert_eq!(seen.subscribers(), 1);
+
+    a.send(&req(2, "lucerna.subscribe", json!({"topics":["seen"]})))
+        .await
+        .unwrap();
+    next(&mut a).await;
+    assert_eq!(seen.subscribers(), 1);
+
+    let mut c = ready(&p).await;
+    c.send(&req(1, "lucerna.subscribe", json!({"topics":["seen"]})))
+        .await
+        .unwrap();
+    next(&mut c).await;
+    assert_eq!(seen.subscribers(), 2);
+
+    a.send(&req(3, "lucerna.unsubscribe", json!({"topics":["seen"]})))
+        .await
+        .unwrap();
+    assert_eq!(next(&mut a).await["result"], json!({}));
+    assert_eq!(seen.subscribers(), 1);
+
+    drop(c);
+    tokio::time::timeout(Duration::from_secs(1), seen.wait_unsubscribed())
+        .await
+        .unwrap();
+    assert_eq!(seen.subscribers(), 0);
+}
+
+#[tokio::test]
+async fn waits_return_at_once_when_already_true() {
+    let mut b = demo();
+    let seen = b.topic("seen", Value::Null);
+    let (_t, p, _s) = start(b).await;
+    tokio::time::timeout(Duration::from_millis(100), seen.wait_unsubscribed())
+        .await
+        .unwrap();
+
+    let mut c = ready(&p).await;
+    c.send(&req(1, "lucerna.subscribe", json!({"topics":["seen"]})))
+        .await
+        .unwrap();
+    next(&mut c).await;
+    tokio::time::timeout(Duration::from_millis(100), seen.wait_subscribed())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn abrupt_close_releases_subscriptions() {
     let mut b = demo();
     let ticks = b.stream("ticks2");
