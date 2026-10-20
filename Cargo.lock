@@ -255,6 +255,7 @@ dependencies = [
  "lucerna-ipc",
  "lucerna-paths",
  "lucerna-protocol",
+ "lucerna-service",
  "serde",
  "serde_json",
  "tempfile",

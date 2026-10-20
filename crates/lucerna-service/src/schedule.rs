@@ -28,7 +28,7 @@
 //!
 //! As chamadas usam [`std::process::Command`] e bloqueiam até o `systemctl`
 //! terminar; dentro do `tokio`, chame de `tokio::task::spawn_blocking`.
-//! [`crate::testing::FakeScheduler`] serve aos testes dos apps.
+//! O `testing::FakeScheduler` (feature `testing`) serve aos testes dos apps.
 
 use std::ffi::OsStr;
 use std::io;
@@ -114,6 +114,9 @@ fn validate_name(name: &str) -> Result<(), ScheduleError> {
 
 /// `"AAAA-MM-DD HH:MM:SS UTC"` a partir dos segundos Unix, o formato do
 /// `OnCalendar`. Usa o `civil_from_days` de Howard Hinnant.
+///
+/// Detalhe de implementação, público só para os testes; pode mudar sem aviso.
+#[doc(hidden)]
 pub fn calendar_utc(at_unix: u64) -> String {
     let days = (at_unix / 86_400) as i64;
     let secs = at_unix % 86_400;
@@ -142,11 +145,17 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// `lucerna-<app>_<name>.timer`. O `_` não aparece no id do app nem no nome
 /// do timer, então dois pares diferentes nunca dão a mesma unidade.
+///
+/// Detalhe de implementação, público só para os testes; pode mudar sem aviso.
+#[doc(hidden)]
 pub fn timer_unit_name(app: &str, name: &str) -> String {
     format!("lucerna-{app}_{name}.timer")
 }
 
 /// O conteúdo do arquivo `.timer`.
+///
+/// Detalhe de implementação, público só para os testes; pode mudar sem aviso.
+#[doc(hidden)]
 pub fn render_timer(app: &str, spec: &TimerSpec) -> String {
     let mut s = format!(
         "[Unit]\nDescription=Lucerna: {app} ({name})\n\n[Timer]\n\

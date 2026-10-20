@@ -12,6 +12,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# FakeShell e FakeScheduler, para os testes dos apps.
+testing = []
+
 [dependencies]
 lucerna-ipc.workspace = true
 lucerna-paths.workspace = true
@@ -22,8 +26,13 @@ tokio.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Os testes deste crate usam o módulo `testing`.
+lucerna-service = { path = ".", features = ["testing"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lints]
 workspace = true

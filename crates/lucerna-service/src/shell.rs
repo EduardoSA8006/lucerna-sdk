@@ -4,7 +4,7 @@
 //! o [`Shell`] guarda isso como estado desejado. A tarefa de conexão
 //! ([`Shell::spawn`]) conecta, aplica o desejado inteiro e depois manda só a
 //! diferença a cada mudança. Se o shell não existe, cai ou trava, ela reconecta
-//! com espera crescente ([`backoff`]) e reaplica tudo: mudanças feitas enquanto o
+//! com espera crescente (de 100 ms a 5 s) e reaplica tudo: mudanças feitas enquanto o
 //! shell estava fora chegam só como o estado atual, sem fila de chamadas velhas.
 //!
 //! Os pedidos saem um por vez, cada um esperando a resposta (com prazo) antes do
@@ -44,6 +44,9 @@ const HEALTHY_SESSION: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Espera antes da tentativa `attempt` (a partir de `0`): `min(100 ms × 2^attempt, 5 s)`.
+///
+/// Detalhe de implementação, público só para os testes; pode mudar sem aviso.
+#[doc(hidden)]
 pub fn backoff(attempt: u32) -> Duration {
     let base = Duration::from_millis(100);
     2u32.checked_pow(attempt)

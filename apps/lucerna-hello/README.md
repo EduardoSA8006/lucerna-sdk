@@ -17,7 +17,8 @@ O app de exemplo do Lucerna: um contador. É o molde que os apps copiam.
   erro: o estado é reaplicado quando ele volta.
 - **Testes.** `tests/protocol.rs` fala o protocolo com o serviço em processo,
   num socket temporário; `tests/shell.rs` usa o `FakeShell` do
-  `lucerna-service`; `tests/files.rs` confere o manifesto e as unidades.
+  `lucerna-service` (feature `testing`, ligada em `[dev-dependencies]`);
+  `tests/files.rs` confere o manifesto e as unidades.
 
 ## Linha de comando
 
