@@ -5,6 +5,7 @@ pub mod client;
 pub mod framing;
 pub mod raw;
 pub mod server;
+mod sync;
 pub mod topic;
 
 pub use client::{Client, ClientError};

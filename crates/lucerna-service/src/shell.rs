@@ -22,7 +22,9 @@ use lucerna_ipc::{Client, ClientError};
 use lucerna_protocol::methods::{
     BAR_CLEAR, BAR_SET, DND_RELEASE, DND_REQUEST, PANEL_OPEN, TUI_OPEN,
 };
-use lucerna_protocol::{BarClearParams, BarItem, DndRequestParams, PanelOpenParams, TuiOpenParams};
+use lucerna_protocol::{
+    BarClearParams, BarItem, DndRequestParams, PanelOpenParams, TuiOpenParams, to_value,
+};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -76,7 +78,9 @@ struct Inner {
     actions: Mutex<Option<mpsc::UnboundedSender<Action>>>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+/// Trava `m` ignorando o envenenamento (o estado sob a trava é coerente a cada
+/// passo). A mesma regra do `lucerna-ipc`, que não a exporta.
+pub(crate) fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -215,10 +219,6 @@ impl Drop for ShellTask {
     fn drop(&mut self) {
         self.handle.abort();
     }
-}
-
-fn to_value<T: serde::Serialize>(v: &T) -> Value {
-    serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
 async fn connection_loop(

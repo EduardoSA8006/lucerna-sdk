@@ -293,3 +293,16 @@ fn app_error_code_below_one_panics() {
 fn app_error_with_a_protocol_code_panics() {
     let _ = RpcError::app(-32601, "Nada.");
 }
+
+#[test]
+fn to_value_serializes_or_gives_null() {
+    assert_eq!(
+        lucerna_protocol::to_value(&TopicsParams {
+            topics: vec!["a".into()]
+        }),
+        json!({"topics": ["a"]})
+    );
+    // Chave que não é texto não vira JSON: `null`, sem erro.
+    let m: std::collections::HashMap<(u8, u8), u8> = [((1, 2), 3)].into();
+    assert_eq!(lucerna_protocol::to_value(&m), serde_json::Value::Null);
+}

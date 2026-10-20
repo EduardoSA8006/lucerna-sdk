@@ -13,13 +13,13 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lucerna_protocol::methods::{HELLO, STATE, SUBSCRIBE, UNSUBSCRIBE};
 use lucerna_protocol::{
     HelloParams, HelloResult, Id, Message, Notification, PROTOCOL_VERSION, Request, RpcError,
-    State, SubscribeResult, TopicsParams, codes,
+    State, SubscribeResult, TopicsParams, codes, to_value,
 };
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
@@ -29,6 +29,7 @@ use tokio::sync::{Notify, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::framing::{FrameError, LineReader, MAX_MESSAGE};
+use crate::sync::lock;
 
 /// Quanto uma escrita que falhou com o socket quebrado espera pelo erro que o
 /// serviço tenha mandado antes de fechar.
@@ -84,10 +85,6 @@ struct Calls {
 }
 
 type Shared = Arc<Mutex<Calls>>;
-
-fn lock(s: &Shared) -> MutexGuard<'_, Calls> {
-    s.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 /// Tira o pedido do mapa se a chamada for cancelada antes da resposta.
 struct Forget<'a> {
@@ -350,10 +347,6 @@ fn topics_params(topics: &[&str]) -> Value {
     to_value(&TopicsParams {
         topics: topics.iter().map(|t| t.to_string()).collect(),
     })
-}
-
-fn to_value<T: serde::Serialize>(v: &T) -> Value {
-    serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
 fn from_value<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, ClientError> {

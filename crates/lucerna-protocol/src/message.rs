@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::RpcError;
+use crate::{RpcError, to_value};
 
 /// Identificador de um pedido: inteiro ou string.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -113,7 +113,7 @@ impl Message {
     pub fn to_json(&self) -> String {
         let mut m = Map::new();
         m.insert("jsonrpc".into(), "2.0".into());
-        let id_value = |id: &Id| serde_json::to_value(id).unwrap_or(Value::Null);
+        let id_value = |id: &Id| to_value(id);
         match self {
             Message::Request(r) => {
                 m.insert("id".into(), id_value(&r.id));
@@ -132,10 +132,7 @@ impl Message {
                 m.insert("id".into(), r.id.as_ref().map_or(Value::Null, id_value));
                 match &r.outcome {
                     Ok(v) => m.insert("result".into(), v.clone()),
-                    Err(e) => m.insert(
-                        "error".into(),
-                        serde_json::to_value(e).unwrap_or(Value::Null),
-                    ),
+                    Err(e) => m.insert("error".into(), to_value(e)),
                 };
             }
         }

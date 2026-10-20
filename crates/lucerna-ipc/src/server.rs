@@ -18,7 +18,7 @@ use std::time::Duration;
 use lucerna_protocol::methods::{HELLO, STATE, SUBSCRIBE, UNSUBSCRIBE};
 use lucerna_protocol::{
     HelloParams, HelloResult, Id, Message, Notification, PROTOCOL_VERSION, Request, Response,
-    RpcError, State, SubscribeResult, TopicsParams, codes, is_reserved,
+    RpcError, State, SubscribeResult, TopicsParams, codes, is_reserved, to_value,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -27,6 +27,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::framing::{FrameError, LineReader, MAX_MESSAGE, write_message};
+use crate::sync::lock;
 use crate::topic::{SubscriberGuard, Topic, TopicKind};
 
 /// Tamanho da fila de respostas de cada conexão.
@@ -303,7 +304,7 @@ struct Pending(Arc<Mutex<BTreeMap<String, State>>>);
 
 impl Pending {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<String, State>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.0)
     }
 }
 
@@ -470,7 +471,7 @@ impl Conn {
                     inner: self.server.clone(),
                 }
                 .hello_result();
-                Ok(serde_json::to_value(result).unwrap_or(Value::Null))
+                Ok(to_value(&result))
             }
         };
         self.reply(Some(id), outcome).await;
@@ -514,7 +515,7 @@ impl Conn {
         }
         // O retrato entra na fila antes de a tarefa da assinatura nascer: nenhum
         // `lucerna.state` chega antes da resposta.
-        let result = serde_json::to_value(SubscribeResult { states }).unwrap_or(Value::Null);
+        let result = to_value(&SubscribeResult { states });
         self.reply(Some(id), Ok(result)).await;
         for (t, rx, guard) in fresh {
             let name = t.name().to_string();
@@ -585,7 +586,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
                 for state in states.into_values() {
                     let n = Notification {
                         method: STATE.to_string(),
-                        params: Some(serde_json::to_value(state).unwrap_or(Value::Null)),
+                        params: Some(to_value(&state)),
                     };
                     write_message(&mut wr, &Message::Notification(n)).await?;
                 }

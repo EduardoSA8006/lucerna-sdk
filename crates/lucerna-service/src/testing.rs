@@ -129,7 +129,7 @@ impl FakeScheduler {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, TimerSpec>> {
-        self.timers.lock().unwrap_or_else(|e| e.into_inner())
+        crate::shell::lock(&self.timers)
     }
 }
 
