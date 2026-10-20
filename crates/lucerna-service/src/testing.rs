@@ -1,6 +1,8 @@
-//! Ferramentas para os testes dos apps.
+//! Ferramentas para os testes dos apps: [`FakeShell`] e [`FakeScheduler`].
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use lucerna_ipc::ServerBuilder;
@@ -11,6 +13,8 @@ use serde_json::{Value, json};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
+
+use crate::schedule::{ScheduleError, Scheduler, TimerSpec};
 
 /// Quanto o [`FakeShell`] espera por uma chamada ou por uma conexão: cobre o
 /// teto de 5 s da reconexão com folga.
@@ -108,5 +112,35 @@ impl FakeShell {
 impl Drop for FakeShell {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+/// Um agendador falso: guarda os timers pedidos, por nome, sem chamar o
+/// systemd. Não confere nome nem horário.
+#[derive(Default, Debug)]
+pub struct FakeScheduler {
+    timers: Mutex<BTreeMap<String, TimerSpec>>,
+}
+
+impl FakeScheduler {
+    /// Os timers agendados agora, por nome.
+    pub fn timers(&self) -> BTreeMap<String, TimerSpec> {
+        self.lock().clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, TimerSpec>> {
+        self.timers.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Scheduler for FakeScheduler {
+    fn schedule(&self, spec: &TimerSpec) -> Result<(), ScheduleError> {
+        self.lock().insert(spec.name.clone(), spec.clone());
+        Ok(())
+    }
+
+    fn cancel(&self, name: &str) -> Result<(), ScheduleError> {
+        self.lock().remove(name);
+        Ok(())
     }
 }
