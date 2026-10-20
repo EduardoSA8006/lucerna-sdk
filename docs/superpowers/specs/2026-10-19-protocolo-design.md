@@ -73,7 +73,7 @@ O cliente chama um método do app; o serviço responde com `result` (qualquer JS
 {"jsonrpc":"2.0","method":"lucerna.state","params":{"topic":"focus","seq":12,"data":{"running":true,"mode":"pomodoro","remaining":1325,"tag":"estudo"}}}
 ```
 
-- Cada mudança manda o retrato inteiro do tópico (não diferenças). Os tópicos são pensados pequenos (o que um painel mostra); um tópico grande é sinal de que deveria ser dividido. `seq` cresce por tópico, para o cliente descartar uma mensagem fora de ordem.
+- Cada mudança manda o retrato inteiro do tópico (não diferenças). Os tópicos são pensados pequenos (o que um painel mostra); um tópico grande é sinal de que deveria ser dividido. `seq` cresce por tópico, para o cliente descartar uma mensagem fora de ordem. Ele começa em `0` (o estado inicial) e volta a `0` quando o serviço reinicia; por isso um cliente que reconecta zera o último `seq` que viu (decisão do plano de implementação).
 - **Tópicos contínuos** (decisão do construtor do documento): um tópico pode ser marcado como contínuo no `hello` (`"streams":["spectrum"]`), para dados de muitos quadros por segundo, como o espectro de áudio. Para eles vale "só o último": se um cliente está lento, o servidor descarta os quadros intermediários daquele cliente e manda o mais novo quando ele puder ler; nunca acumula fila sem limite e nunca desconecta por isso. Tópicos comuns também são coalescidos por cliente (se dois retratos do mesmo tópico estão esperando, só o mais novo vai). O serviço só produz um tópico contínuo enquanto houver alguém assinando.
 - `lucerna.unsubscribe {"topics":[...]}` para de mandar. Fechar a conexão desfaz tudo.
 - Um contador que muda sozinho a cada segundo (o tempo restante do foco) **não** é enviado a cada segundo: o serviço manda o instante de fim (`ends_at`, horário Unix em segundos) e o cliente conta sozinho; só volta a mandar quando algo muda de verdade. (Regra para os apps; o exemplo acima é ilustrativo.)
@@ -155,7 +155,7 @@ Os crates do SDK seguem semver próprio; a versão do protocolo que cada versão
 - **Um binário por app** (decisão do construtor do documento): `lucerna-<app>` é tudo. Sem argumentos, abre a TUI; com um subcomando, vira cliente da linha de comando; com o subcomando oculto `serve`, é o serviço (o `ExecStart` da unidade do systemd é `lucerna-<app> serve`). O `lucerna-cli` e o `lucerna-service` se compõem num `main` só, e o `lucerna-hello` mostra esse molde, que todos os apps copiam.
 - O SDK traz o esqueleto da linha de comando: com um subcomando, o binário conecta, faz o aperto de mão (`client` = `cli`), chama o método e imprime o resultado.
 - Os subcomandos são declarados pelo app (nome, ajuda em português, argumentos) e cada um vira um método do protocolo. Ex.: `lucerna-routine add "estudar amanhã 19h"` → `tasks.add {"text":"estudar amanhã 19h"}`; `lucerna-routine focus start --tag estudo` → `focus.start {...}`.
-- Saída legível por padrão; `--json` imprime o `result` cru (para scripts). Código de saída `0` no sucesso, `1` com erro do app, `2` sem conseguir falar com o serviço.
+- Saída legível por padrão; `--json` imprime o `result` cru (para scripts). Código de saída `0` no sucesso, `1` com erro do app, `2` sem conseguir falar com o serviço e `64` com uso errado da linha de comando (decisão do plano de implementação: o `2` padrão do clap colidiria com "sem serviço").
 - Subcomandos comuns que todo app ganha: `status` (o retrato dos tópicos) e `watch <tópico>` (acompanha as mudanças no terminal, útil para depurar).
 
 ## Crates do `lucerna-sdk`
@@ -171,7 +171,7 @@ Um workspace Cargo (edição 2024, licença GPL-3.0), publicado no crates.io:
 | `lucerna-paths` | as pastas de "Pastas e dados" do `ecossistema.md` |
 | `lucerna-manifest` | os tipos do manifesto, a leitura, a validação e a regra de compatibilidade de `api` |
 
-E o app de exemplo **`lucerna-hello`** (no mesmo repositório, não publicado): um contador com um tópico comum (`counter`) e um contínuo (`ticks`, para exercitar o "só o último"), dois métodos (`counter.add`, `counter.reset`), um item na barra com o valor, a linha de comando (`lucerna-hello add 3`, `status`, `watch counter`), as unidades do systemd e o manifesto **sem painel**. O painel QML do `lucerna-hello` fica para o spec do lado do shell, quando a API de componentes `1.0` existir (decisão do construtor do documento: escrever o painel agora seria contra uma API que ainda não foi definida).
+E o app de exemplo **`lucerna-hello`** (no mesmo repositório, não publicado): um contador com um tópico comum (`counter`) e um contínuo (`ticks`, para exercitar o "só o último"), três métodos (`counter.add`, `counter.reset` e `quiet.set`, que liga e desliga o não perturbe, para o teste do `shell.sock`; o terceiro é decisão do plano de implementação), um item na barra com o valor, a linha de comando (`lucerna-hello add 3`, `status`, `watch counter`), as unidades do systemd e o manifesto **sem painel**. O painel QML do `lucerna-hello` fica para o spec do lado do shell, quando a API de componentes `1.0` existir (decisão do construtor do documento: escrever o painel agora seria contra uma API que ainda não foi definida).
 
 ## Lado do shell (no `lucerna-shell`, fora deste repositório)
 
