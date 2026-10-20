@@ -9,7 +9,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-keywords.workspace = true
+keywords = ["lucerna", "ipc", "json-rpc", "unix-socket", "desktop"]
 categories.workspace = true
 
 [dependencies]

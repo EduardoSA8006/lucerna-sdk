@@ -10,7 +10,6 @@ license = "GPL-3.0-only"
 repository = "https://github.com/lucerna-desktop/lucerna-sdk"
 homepage = "https://github.com/lucerna-desktop/lucerna-sdk"
 authors = ["Eduardo Alves"]
-keywords = ["lucerna", "ipc", "json-rpc", "systemd", "desktop"]
 categories = ["os::linux-apis"]
 
 [workspace.dependencies]

@@ -2,10 +2,8 @@ use lucerna_manifest::*;
 use serde_json::Value;
 
 fn cases() -> Value {
-    let p = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../testdata/manifest-cases.json"
-    );
+    // Dentro do crate, para ir no pacote publicado (o shell usa o mesmo arquivo).
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/manifest-cases.json");
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 

@@ -113,7 +113,7 @@ O shell também atende um socket, `$XDG_RUNTIME_DIR/lucerna/shell.sock`, no **me
 
 ## Manifesto
 
-Um arquivo **JSON** por app em `/usr/share/lucerna/apps/<app>.json` (instalado pelo pacote). O shell também lê `$XDG_DATA_HOME/lucerna/apps/` (instalação local do usuário; vence a do sistema). JSON, e não TOML (decisão do construtor do documento), porque quem lê o manifesto é o shell, em QML, que tem `JSON.parse` e não tem leitor de TOML; assim o shell não precisa de nenhum programa auxiliar. O crate `lucerna-manifest` gera e valida o arquivo do lado dos apps, e a regra de compatibilidade é simples o bastante para ser repetida no shell (com um caso de teste comum aos dois lados, num arquivo de exemplos versionado neste repositório).
+Um arquivo **JSON** por app em `/usr/share/lucerna/apps/<app>.json` (instalado pelo pacote). O shell também lê `$XDG_DATA_HOME/lucerna/apps/` (instalação local do usuário; vence a do sistema). JSON, e não TOML (decisão do construtor do documento), porque quem lê o manifesto é o shell, em QML, que tem `JSON.parse` e não tem leitor de TOML; assim o shell não precisa de nenhum programa auxiliar. O crate `lucerna-manifest` gera e valida o arquivo do lado dos apps, e a regra de compatibilidade é simples o bastante para ser repetida no shell (com um caso de teste comum aos dois lados, num arquivo de exemplos versionado neste repositório: `crates/lucerna-manifest/testdata/manifest-cases.json`, dentro do crate para ir junto no pacote publicado).
 
 ```json
 {
