@@ -1,0 +1,10 @@
+[Unit]
+Description=Lucerna Hello (socket)
+
+[Socket]
+ListenStream=%t/lucerna/hello.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

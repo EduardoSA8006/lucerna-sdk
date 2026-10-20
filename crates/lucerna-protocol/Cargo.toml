@@ -1,0 +1,21 @@
+[package]
+name = "lucerna-protocol"
+description = "Tipos das mensagens do protocolo do Lucerna (JSON-RPC 2.0), sem I/O."
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords = ["lucerna", "json-rpc", "protocol", "ipc", "desktop"]
+categories.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

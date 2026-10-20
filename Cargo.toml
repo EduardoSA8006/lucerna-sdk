@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+repository = "https://github.com/lucerna-desktop/lucerna-sdk"
+homepage = "https://github.com/lucerna-desktop/lucerna-sdk"
+authors = ["Eduardo Alves"]
+categories = ["os::linux-apis"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = "4"
+thiserror = "2"
+tempfile = "3"
+lucerna-protocol = { path = "crates/lucerna-protocol", version = "0.1.0" }
+lucerna-paths = { path = "crates/lucerna-paths", version = "0.1.0" }
+lucerna-manifest = { path = "crates/lucerna-manifest", version = "0.1.0" }
+lucerna-ipc = { path = "crates/lucerna-ipc", version = "0.1.0" }
+lucerna-service = { path = "crates/lucerna-service", version = "0.1.0" }
+lucerna-cli = { path = "crates/lucerna-cli", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"

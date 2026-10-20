@@ -74,7 +74,7 @@
 | `lucerna-hello` | id `hello`; `counter` = `{"value": n}`; `ticks` = `{"tick": k, "bands": [64 × f32]}` a cada 1 ms (imita o espectro); métodos `counter.add {"n"}`, `counter.reset`, `quiet.set {"on"}` (não perturbe, para o teste do shell) | `quiet.set` é o único acréscimo, para exercitar `dnd.*`; registrado também no spec |
 | `FakeShell` | público em `lucerna_service::testing` | todo app vai querer testar o que manda ao shell |
 | `RawConn` | público em `lucerna_ipc::raw` | testes e depuração, linha por linha como no `socat` |
-| Exemplos compartilhados | `testdata/manifest-cases.json` (casos de `api` e de manifestos válidos/inválidos com o `kind` do erro) | o shell lê o mesmo arquivo |
+| Exemplos compartilhados | `crates/lucerna-manifest/testdata/manifest-cases.json` (casos de `api` e de manifestos válidos/inválidos com o `kind` do erro) | o shell lê o mesmo arquivo |
 | Ruleset | checks `fmt`, `clippy`, `test` (`integration_id: 15368`), `strict: true`, aplicados depois que o CI do PR passar | |
 
 ## Mapa de arquivos
@@ -85,7 +85,7 @@
 | `crates/lucerna-protocol/src/{lib,version,message,error,methods,params}.rs` | tipos e constantes, sem I/O |
 | `crates/lucerna-paths/src/lib.rs` | `Env`, `AppPaths`, pastas XDG, validação do id |
 | `crates/lucerna-manifest/src/lib.rs` | `Manifest`, leitura, validação, `api_compatible` |
-| `testdata/manifest-cases.json` | exemplos compartilhados com o shell |
+| `crates/lucerna-manifest/testdata/manifest-cases.json` | exemplos compartilhados com o shell |
 | `crates/lucerna-ipc/src/{lib,framing,server,topic,client,raw}.rs` | enquadramento, servidor, tópicos, cliente, conexão crua |
 | `crates/lucerna-service/src/{lib,activation,idle,shell,schedule,service,testing}.rs` | esqueleto do serviço |
 | `crates/lucerna-cli/src/{lib,render}.rs` | esqueleto da linha de comando |
@@ -335,7 +335,7 @@ fn private_dir_is_0700_even_if_it_existed() {
 ### Tarefa 3: `lucerna-manifest` e os exemplos compartilhados
 
 **Files:**
-- Create: `crates/lucerna-manifest/{Cargo.toml,src/lib.rs}`, `testdata/manifest-cases.json`, `testdata/README.md` (três linhas: para que serve, quem lê, que o shell testa contra ele)
+- Create: `crates/lucerna-manifest/{Cargo.toml,src/lib.rs}`, `crates/lucerna-manifest/testdata/manifest-cases.json`, `crates/lucerna-manifest/testdata/README.md` (três linhas: para que serve, quem lê, que o shell testa contra ele)
 - Test: `crates/lucerna-manifest/tests/manifest.rs`
 
 **Interfaces:**
@@ -349,7 +349,7 @@ fn private_dir_is_0700_even_if_it_existed() {
 
 Regras de `validate`: `schema == 1`; id válido; `name`, `icon` e `tui` (se houver) não vazios; `socket == "<id>.sock"`; `qml` absolutos; `card` exige `panel`.
 
-`testdata/manifest-cases.json` (formato fixo; o shell lê o mesmo):
+`crates/lucerna-manifest/testdata/manifest-cases.json` (formato fixo; o shell lê o mesmo):
 
 ```json
 {
@@ -385,7 +385,7 @@ use lucerna_manifest::*;
 use serde_json::Value;
 
 fn cases() -> Value {
-    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/manifest-cases.json");
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/manifest-cases.json");
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 

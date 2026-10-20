@@ -94,24 +94,32 @@ Códigos do JSON-RPC (`-32700` a `-32603`) como na especificação, mais os do p
 
 ## Pedidos ao shell: o socket do shell
 
-O shell também atende um socket, `$XDG_RUNTIME_DIR/lucerna/shell.sock`, no **mesmo** protocolo (aperto de mão com `client` = o nome do app). É por ele que o app pede coisas ao shell. Métodos da versão 1:
+O shell também atende um socket, `$XDG_RUNTIME_DIR/lucerna/shell.sock`, no **mesmo** protocolo (aperto de mão com `client` = o nome do app e `app` = `"shell"`; o shell responde com `"app":"shell"`, e por isso `shell` é um id reservado, que nenhum app pode usar):
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"lucerna.hello","params":{"protocol":"1.0","client":"routine","app":"shell"}}
+```
+
+É por ele que o app pede coisas ao shell. Métodos da versão 1:
 
 | Método | O que faz |
 | --- | --- |
 | `bar.set {id, icon, text?, ends_at?, panel?}` | põe (ou atualiza) um item na barra: ícone, um texto curto (um número) e, opcional, um timer contado pelo shell até `ends_at`; `panel` diz se o clique abre o painel do app |
 | `bar.clear {id}` | tira o item |
 | `dnd.request {reason}` / `dnd.release` | pede para ligar / devolve o "não perturbe". O shell decide, mostra quem ligou (o nome do app e o `reason`) e desliga quando todos os que pediram devolveram (ou quando a conexão do app fecha) |
-| `tui.open {args?}` | abre o terminal do usuário com a TUI do app, já com os argumentos (a nota, a tarefa) — sempre para o usuário; a comunicação nunca depende disso |
+| `tui.open {args?}` | abre o terminal do usuário com a TUI do app, já com os argumentos (a nota, a tarefa) — sempre para o usuário; a comunicação nunca depende disso. O shell roda `<app.tui> tui <args…>` (o `app.tui` do manifesto, o subcomando oculto `tui` e cada argumento como um argumento separado, sem passar por shell); sem `args`, só `<app.tui> tui` |
 | `panel.open {page?}` | abre o painel do app no shell, opcionalmente numa página |
 
-- Os itens da barra e o pedido de não perturbe **pertencem à conexão**: se o serviço do app sai (ociosidade, queda), o shell os desfaz sozinho. Um serviço que quer manter um item na barra (o pomodoro rodando) não sai por ociosidade enquanto ele existir.
+- Os itens da barra e o pedido de não perturbe **pertencem à conexão**: se o serviço do app sai (ociosidade, queda), o shell os desfaz sozinho. Por isso um serviço com um item na barra (o pomodoro rodando) ou com um não perturbe pedido não sai por ociosidade enquanto ele existir: o SDK conta os dois como trabalho pendente (decisão da revisão final: o não perturbe some com a saída do serviço tanto quanto a barra).
 - O shell não está rodando (o app usado só pela TUI): a conexão ao `shell.sock` falha; o SDK trata isso como "sem shell" e os pedidos viram nada, sem erro para o usuário.
-- **Reconexão** (decisão do construtor do documento): o SDK guarda o estado desejado do app junto ao shell (os itens da barra e o pedido de não perturbe ativos). Se o shell não existe, cai ou reinicia (o Quickshell recarrega a config com frequência), o SDK tenta reconectar com espera crescente (até ~5 s entre tentativas) e, ao conseguir, refaz o aperto de mão e reaplica tudo. Para o app, a barra e o não perturbe são só "o que eu quero agora"; o SDK cuida de o shell refletir isso. Um item na barra conta como trabalho pendente mesmo enquanto o shell está fora.
+- **Reconexão** (decisão do construtor do documento): o SDK guarda o estado desejado do app junto ao shell (os itens da barra e o pedido de não perturbe ativos). Se o shell não existe, cai ou reinicia (o Quickshell recarrega a config com frequência), o SDK tenta reconectar com espera crescente (até ~5 s entre tentativas) e, ao conseguir, refaz o aperto de mão e reaplica tudo. Para o app, a barra e o não perturbe são só "o que eu quero agora"; o SDK cuida de o shell refletir isso. Um item na barra (ou o não perturbe pedido) conta como trabalho pendente mesmo enquanto o shell está fora.
+- **Pedido recusado** (decisão do construtor do SDK): se o shell responde a um pedido com erro, o SDK registra no stderr e não repete o pedido até o app mudar aquele item (ou o não perturbe) ou o shell reconectar. Uma conexão que cai logo depois do aperto de mão, sem responder pedido nenhum, não zera a espera crescente (a menos que tenha durado 1 s), para um shell quebrado não receber uma conexão a cada 100 ms.
+- **`dnd.request` repetido** na mesma conexão só atualiza o `reason` (é idempotente): o shell não conta pedidos, e basta um `dnd.release` para devolver.
 - **Notificações** não passam por aqui: o app usa o servidor de notificações do sistema (D-Bus `org.freedesktop.Notifications`), que o shell já atende.
 
 ## Manifesto
 
-Um arquivo **JSON** por app em `/usr/share/lucerna/apps/<app>.json` (instalado pelo pacote). O shell também lê `$XDG_DATA_HOME/lucerna/apps/` (instalação local do usuário; vence a do sistema). JSON, e não TOML (decisão do construtor do documento), porque quem lê o manifesto é o shell, em QML, que tem `JSON.parse` e não tem leitor de TOML; assim o shell não precisa de nenhum programa auxiliar. O crate `lucerna-manifest` gera e valida o arquivo do lado dos apps, e a regra de compatibilidade é simples o bastante para ser repetida no shell (com um caso de teste comum aos dois lados, num arquivo de exemplos versionado neste repositório).
+Um arquivo **JSON** por app em `/usr/share/lucerna/apps/<app>.json` (instalado pelo pacote). O shell também lê `$XDG_DATA_HOME/lucerna/apps/` (instalação local do usuário; vence a do sistema). JSON, e não TOML (decisão do construtor do documento), porque quem lê o manifesto é o shell, em QML, que tem `JSON.parse` e não tem leitor de TOML; assim o shell não precisa de nenhum programa auxiliar. O crate `lucerna-manifest` gera e valida o arquivo do lado dos apps, e a regra de compatibilidade é simples o bastante para ser repetida no shell (com um caso de teste comum aos dois lados, num arquivo de exemplos versionado neste repositório: `crates/lucerna-manifest/testdata/manifest-cases.json`, dentro do crate para ir junto no pacote publicado).
 
 ```json
 {
@@ -148,15 +156,15 @@ Os crates do SDK seguem semver próprio; a versão do protocolo que cada versão
 
 - **Ativação:** cada app instala `lucerna-<app>.socket` e `lucerna-<app>.service` do systemd do usuário. O socket fica em `%t/lucerna/<app>.sock`; o systemd passa o socket ao serviço (`LISTEN_FDS`). O SDK traz o código para receber esse socket — e, para desenvolvimento, para criar o socket sozinho quando o serviço é rodado à mão.
 - **Saída por ociosidade:** o serviço sai depois de **60 s** sem clientes conectados e sem trabalho pendente (valor padrão do SDK, configurável por app). "Trabalho pendente" é decidido pelo app (um timer de foco rodando, um item na barra, uma transferência do celular). O systemd sobe de novo na próxima conexão.
-- **Trabalho agendado:** o SDK oferece registrar um timer do systemd do usuário (uma unidade transitória, via `systemd-run --user --on-calendar=... ` ou a API D-Bus do systemd) que sobe o serviço no horário; o serviço faz o trabalho (o lembrete) e volta a sair. O detalhe da API (transitória vs. arquivo de unidade) fica para o construtor, desde que sobreviva a um reinício do computador quando o app pede.
+- **Trabalho agendado:** o SDK registra um timer do systemd do usuário que sobe o serviço no horário; o serviço faz o trabalho (o lembrete), cancela o timer e volta a sair. Decisão do construtor: um arquivo de unidade `lucerna-<app>_<nome>.timer` (o `_` separa o id do app do nome do timer, que não o contêm, e evita colisão entre, por exemplo, o app `a-b` com o timer `c` e o app `a` com o timer `b-c`), com `OnCalendar` em UTC e `Unit=lucerna-<app>.service`, ligado com `systemctl --user`. Persistente (sobrevive a reinício): em `$XDG_CONFIG_HOME/systemd/user/` com `Persistent=true`, `enable` e `restart`; não persistente: em `$XDG_RUNTIME_DIR/systemd/user/` com `restart`. O `lucerna-<app>.service` precisa estar instalado (o SDK confere antes e recusa); o horário precisa estar ao menos 2 s no futuro; trocar a persistência com o mesmo nome apaga o arquivo da outra pasta; uma falha no meio desfaz o que foi feito.
 
 ## Linha de comando e binários
 
-- **Um binário por app** (decisão do construtor do documento): `lucerna-<app>` é tudo. Sem argumentos, abre a TUI; com um subcomando, vira cliente da linha de comando; com o subcomando oculto `serve`, é o serviço (o `ExecStart` da unidade do systemd é `lucerna-<app> serve`). O `lucerna-cli` e o `lucerna-service` se compõem num `main` só, e o `lucerna-hello` mostra esse molde, que todos os apps copiam.
+- **Um binário por app** (decisão do construtor do documento): `lucerna-<app>` é tudo. Sem argumentos, abre a TUI; com um subcomando, vira cliente da linha de comando; com o subcomando oculto `serve`, é o serviço (o `ExecStart` da unidade do systemd é `lucerna-<app> serve`); com o subcomando oculto `tui <args…>`, abre a TUI com esses argumentos (é o que o shell roda no `tui.open`; depois do primeiro argumento, tudo vai para a TUI, mesmo o que começa com `-`). `lucerna-<app>` sem nada é o mesmo que `lucerna-<app> tui` sem argumentos (decisão da revisão final: um subcomando explícito evita que um argumento da TUI, como `t_42`, seja lido como um subcomando desconhecido). O `lucerna-cli` e o `lucerna-service` se compõem num `main` só, e o `lucerna-hello` mostra esse molde, que todos os apps copiam.
 - O SDK traz o esqueleto da linha de comando: com um subcomando, o binário conecta, faz o aperto de mão (`client` = `cli`), chama o método e imprime o resultado.
 - Os subcomandos são declarados pelo app (nome, ajuda em português, argumentos) e cada um vira um método do protocolo. Ex.: `lucerna-routine add "estudar amanhã 19h"` → `tasks.add {"text":"estudar amanhã 19h"}`; `lucerna-routine focus start --tag estudo` → `focus.start {...}`.
 - Saída legível por padrão; `--json` imprime o `result` cru (para scripts). Código de saída `0` no sucesso, `1` com erro do app, `2` sem conseguir falar com o serviço e `64` com uso errado da linha de comando (decisão do plano de implementação: o `2` padrão do clap colidiria com "sem serviço").
-- Subcomandos comuns que todo app ganha: `status` (o retrato dos tópicos) e `watch <tópico>` (acompanha as mudanças no terminal, útil para depurar).
+- Subcomandos comuns que todo app ganha: `status` (o retrato dos tópicos) e `watch <tópico>` (acompanha as mudanças no terminal, útil para depurar). `status`, `watch`, `serve` e `tui` são nomes reservados: um app não declara subcomando com eles.
 
 ## Crates do `lucerna-sdk`
 
