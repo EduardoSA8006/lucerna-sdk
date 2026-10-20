@@ -23,11 +23,16 @@ pub struct RawConn {
 impl RawConn {
     /// Conecta ao socket em `path`.
     pub async fn connect(path: &Path) -> io::Result<RawConn> {
-        let (rd, wr) = UnixStream::connect(path).await?.into_split();
-        Ok(RawConn {
+        Ok(RawConn::from_stream(UnixStream::connect(path).await?))
+    }
+
+    /// Usa um socket já aberto (ex.: o lado aceito de um servidor falso).
+    pub fn from_stream(stream: UnixStream) -> RawConn {
+        let (rd, wr) = stream.into_split();
+        RawConn {
             reader: LineReader::new(rd, MAX_MESSAGE),
             writer: wr,
-        })
+        }
     }
 
     /// Manda `v` como uma linha.

@@ -5,13 +5,66 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{demo, start};
+use lucerna_ipc::MAX_MESSAGE;
 use lucerna_ipc::client::{Client, ClientError};
-use lucerna_ipc::{LineReader, MAX_MESSAGE};
+use lucerna_ipc::raw::RawConn;
 use lucerna_protocol::codes;
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
+use tempfile::TempDir;
 use tokio::net::UnixListener;
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
+
+/// Servidor falso: aceita uma conexão e entrega a `script` como `RawConn`.
+fn fake<F, Fut>(script: F) -> (TempDir, std::path::PathBuf, JoinHandle<()>)
+where
+    F: FnOnce(RawConn) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send,
+{
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        script(RawConn::from_stream(stream)).await;
+    });
+    (dir, path, handle)
+}
+
+async fn expect(c: &mut RawConn, method: &str) -> Value {
+    let m = c.recv().await.unwrap().expect("o cliente fechou");
+    assert_eq!(m["method"], method, "mensagem inesperada: {m}");
+    m
+}
+
+async fn answer(c: &mut RawConn, req: &Value, result: Value) {
+    c.send(&json!({"jsonrpc": "2.0", "id": req["id"], "result": result}))
+        .await
+        .unwrap();
+}
+
+/// Responde ao `hello` como o app `demo` com os tópicos `topics`.
+async fn fake_hello(c: &mut RawConn, topics: &[&str]) {
+    let h = expect(c, "lucerna.hello").await;
+    answer(
+        c,
+        &h,
+        json!({"protocol": "1.0", "app": "demo", "version": "0.1.0",
+               "topics": topics, "streams": [], "methods": []}),
+    )
+    .await;
+}
+
+async fn state(c: &mut RawConn, topic: &str, seq: u64) {
+    c.send(&json!({"jsonrpc": "2.0", "method": "lucerna.state",
+                   "params": {"topic": topic, "seq": seq, "data": {"v": seq}}}))
+        .await
+        .unwrap();
+}
+
+/// Segura a conexão até o cliente fechar (ou 5 s).
+async fn hold(mut c: RawConn) {
+    while let Ok(Some(_)) = c.recv().await {}
+}
 
 #[tokio::test]
 async fn connect_call_subscribe_and_follow() {
@@ -96,47 +149,184 @@ async fn oversized_call_reports_message_too_large() {
     }
 }
 
-/// Servidor falso: responde ao hello e ao subscribe (com `seq` 5) e depois
-/// manda `lucerna.state` com `seq` 4 e 6.
+/// O servidor falso responde ao subscribe com `seq` 5 e depois manda
+/// `lucerna.state` com `seq` 4, 5 e 6: só o 6 passa.
 #[tokio::test]
 async fn out_of_order_seq_is_dropped() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("f.sock");
-    let listener = UnixListener::bind(&path).unwrap();
-    let fake = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let (rd, mut wr) = stream.into_split();
-        let mut lines = LineReader::new(rd, MAX_MESSAGE);
-        let mut send = async |v: Value| {
-            let mut b = v.to_string().into_bytes();
-            b.push(b'\n');
-            wr.write_all(&b).await.unwrap();
-        };
-        let hello: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        assert_eq!(hello["method"], "lucerna.hello");
-        send(json!({"jsonrpc":"2.0","id":hello["id"],"result":{
-            "protocol":"1.0","app":"demo","version":"0.1.0",
-            "topics":["counter"],"streams":[],"methods":[]}}))
-        .await;
-        let sub: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        assert_eq!(sub["method"], "lucerna.subscribe");
-        send(json!({"jsonrpc":"2.0","id":sub["id"],"result":{"states":[
-            {"topic":"counter","seq":5,"data":{"value":5}}]}}))
+    let (_d, path, f) = fake(|mut c| async move {
+        fake_hello(&mut c, &["counter"]).await;
+        let sub = expect(&mut c, "lucerna.subscribe").await;
+        answer(
+            &mut c,
+            &sub,
+            json!({"states": [{"topic": "counter", "seq": 5, "data": {"v": 5}}]}),
+        )
         .await;
         for seq in [4, 5, 6] {
-            send(json!({"jsonrpc":"2.0","method":"lucerna.state",
-                "params":{"topic":"counter","seq":seq,"data":{"value":seq}}}))
-            .await;
+            state(&mut c, "counter", seq).await;
         }
-        // Segura a conexão até o cliente fechar.
-        while let Ok(Some(_)) = lines.next_line().await {}
+        hold(c).await;
     });
     let mut c = Client::connect(&path, "tui", "demo").await.unwrap();
     let snap = c.subscribe(&["counter"]).await.unwrap();
     assert_eq!(snap[0].seq, 5);
     let s = c.next_state().await.unwrap();
-    assert_eq!((s.seq, s.data), (6, json!({"value": 6})));
+    assert_eq!((s.seq, s.data), (6, json!({"v": 6})));
     drop(c);
-    fake.await.unwrap();
+    f.await.unwrap();
+}
+
+/// Um estado por tópico (o mais novo), na ordem em que os tópicos chegaram;
+/// o `unsubscribe` tira o tópico do que está pendente.
+#[tokio::test]
+async fn states_are_coalesced_per_topic_in_arrival_order() {
+    let (_d, path, f) = fake(|mut c| async move {
+        fake_hello(&mut c, &["a", "b", "c"]).await;
+        let sub = expect(&mut c, "lucerna.subscribe").await;
+        let zero = |t: &str| json!({"topic": t, "seq": 0, "data": null});
+        answer(
+            &mut c,
+            &sub,
+            json!({"states": [zero("a"), zero("b"), zero("c")]}),
+        )
+        .await;
+        state(&mut c, "a", 1).await;
+        state(&mut c, "b", 1).await;
+        state(&mut c, "a", 2).await;
+        state(&mut c, "c", 1).await;
+        // A resposta vem depois dos estados: quando o `call` volta, todos chegaram.
+        let sync = expect(&mut c, "sync").await;
+        answer(&mut c, &sync, json!({})).await;
+        let unsub = expect(&mut c, "lucerna.unsubscribe").await;
+        answer(&mut c, &unsub, json!({})).await;
+        // Fecha a conexão.
+    });
+    let mut c = Client::connect(&path, "tui", "demo").await.unwrap();
+    c.subscribe(&["a", "b", "c"]).await.unwrap();
+    c.call("sync", None).await.unwrap();
+    c.unsubscribe(&["c"]).await.unwrap();
+    let got: Vec<(String, u64)> = [c.next_state().await, c.next_state().await]
+        .into_iter()
+        .map(|s| {
+            let s = s.unwrap();
+            (s.topic, s.seq)
+        })
+        .collect();
+    assert_eq!(got, vec![("a".into(), 2), ("b".into(), 1)]);
+    assert!(c.next_state().await.is_none());
+    f.await.unwrap();
+}
+
+/// Respostas com `id` desconhecido ou string são ignoradas; a certa chega.
+#[tokio::test]
+async fn unknown_or_string_ids_are_ignored() {
+    let (_d, path, f) = fake(|mut c| async move {
+        fake_hello(&mut c, &[]).await;
+        let r = expect(&mut c, "app.x").await;
+        for id in [json!(999), json!("1"), json!("x")] {
+            c.send(&json!({"jsonrpc": "2.0", "id": id, "result": "errado"}))
+                .await
+                .unwrap();
+        }
+        answer(&mut c, &r, json!("certo")).await;
+        hold(c).await;
+    });
+    let c = Client::connect(&path, "tui", "demo").await.unwrap();
+    assert_eq!(c.call("app.x", None).await.unwrap(), json!("certo"));
+    drop(c);
+    f.await.unwrap();
+}
+
+/// Uma resposta que não tem a forma esperada vira `Decode`, não `Io`.
+#[tokio::test]
+async fn malformed_hello_result_is_decode_error() {
+    let (_d, path, f) = fake(|mut c| async move {
+        let h = expect(&mut c, "lucerna.hello").await;
+        answer(&mut c, &h, json!({"app": 3})).await;
+        hold(c).await;
+    });
+    match Client::connect(&path, "tui", "demo").await {
+        Err(ClientError::Decode(_)) => {}
+        r => panic!("esperava Decode, veio {:?}", r.map(|_| ())),
+    }
+    f.await.unwrap();
+}
+
+/// Uma chamada em andamento acorda com `Closed` quando o servidor cai.
+#[tokio::test]
+async fn pending_call_wakes_with_closed_when_server_dies() {
+    let (_t, p, s) = start(demo()).await;
+    let c = Arc::new(Client::connect(&p, "tui", "demo").await.unwrap());
+    let call = tokio::spawn({
+        let c = c.clone();
+        async move { c.call("slow.op", None).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    s.abort();
+    let r = tokio::time::timeout(Duration::from_secs(1), call)
+        .await
+        .expect("a chamada não acordou em 1 s")
+        .unwrap();
+    assert!(matches!(r, Err(ClientError::Closed)), "veio {r:?}");
+}
+
+/// Um servidor que aceita e não responde: `connect_timeout` e `call_timeout`
+/// voltam com `Timeout` no prazo.
+#[tokio::test]
+async fn timeouts_against_silent_server() {
+    let (_d, path, f) = fake(hold);
+    let t0 = std::time::Instant::now();
+    match Client::connect_timeout(&path, "tui", "demo", Duration::from_millis(200)).await {
+        Err(ClientError::Timeout) => {}
+        r => panic!("esperava Timeout, veio {:?}", r.map(|_| ())),
+    }
+    assert!(t0.elapsed() < Duration::from_secs(1));
+    f.await.unwrap();
+
+    let (_d, path, f) = fake(|mut c| async move {
+        fake_hello(&mut c, &[]).await;
+        hold(c).await;
+    });
+    let c = Client::connect_timeout(&path, "tui", "demo", Duration::from_secs(2))
+        .await
+        .unwrap();
+    let t0 = std::time::Instant::now();
+    match c
+        .call_timeout("app.x", None, Duration::from_millis(200))
+        .await
+    {
+        Err(ClientError::Timeout) => {}
+        r => panic!("esperava Timeout, veio {r:?}"),
+    }
+    assert!(t0.elapsed() < Duration::from_secs(1));
+    drop(c);
+    f.await.unwrap();
+}
+
+/// Com assinatura ativa e ninguém lendo `next_state`, as chamadas não travam:
+/// os estados são coalescidos por tópico no cliente.
+#[tokio::test]
+async fn sequential_calls_without_draining_states_do_not_block() {
+    let (_t, p, _s) = start(demo()).await;
+    let mut c = Client::connect(&p, "tui", "demo").await.unwrap();
+    c.subscribe(&["counter"]).await.unwrap();
+    for i in 0..400 {
+        let r = tokio::time::timeout(
+            Duration::from_secs(2),
+            c.call("counter.add", Some(json!({"n": 1}))),
+        )
+        .await;
+        r.unwrap_or_else(|_| panic!("travou na chamada {i}"))
+            .unwrap();
+    }
+    // O que ficou pendente foi coalescido: poucos estados, em ordem, até o 400.
+    let mut got = Vec::new();
+    while got.last() != Some(&400) {
+        let s = tokio::time::timeout(Duration::from_secs(2), c.next_state())
+            .await
+            .unwrap()
+            .unwrap();
+        got.push(s.seq);
+    }
+    assert!(got.len() <= 3 && got.is_sorted(), "estados: {got:?}");
 }
