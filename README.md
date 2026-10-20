@@ -20,6 +20,22 @@ Veja a pasta [`docs/`](docs/):
 
 A branch `main` é protegida por um ruleset igual ao do `lucerna-shell`: PR obrigatório, conversas resolvidas, só merge commit, sem deleção nem force push. Os checks obrigatórios entram quando houver CI.
 
+## Desenvolvimento
+
+O CI (`fmt`, `clippy` e `test`, todos obrigatórios no `main`) roda estes comandos; rode-os antes de abrir o PR:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+Os testes de processo criam sockets Unix, então o `TMPDIR` precisa ser curto (o CI fixa `TMPDIR=/tmp`). O teste que usa o `systemctl --user` de verdade é `#[ignore]` e só roda numa sessão com systemd de usuário:
+
+```bash
+cargo test --workspace --locked -- --ignored
+```
+
 ## Licença
 
 [GPL-3.0](LICENSE).
