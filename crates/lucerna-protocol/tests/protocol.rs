@@ -281,3 +281,15 @@ fn null_id_only_valid_on_error_response() {
         Ok(Message::Response(Response { id: None, .. }))
     ));
 }
+
+#[test]
+#[should_panic(expected = "os códigos do app começam em 1")]
+fn app_error_code_below_one_panics() {
+    let _ = RpcError::app(0, "Nada.");
+}
+
+#[test]
+#[should_panic(expected = "o código -32601 é reservado")]
+fn app_error_with_a_protocol_code_panics() {
+    let _ = RpcError::app(-32601, "Nada.");
+}

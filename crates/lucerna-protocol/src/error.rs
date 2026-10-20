@@ -115,8 +115,17 @@ impl RpcError {
     }
 
     /// Erro do app (`code >= 1`).
+    ///
+    /// # Pânico
+    ///
+    /// Entra em pânico (também em release) com `code < 1`: os códigos de zero
+    /// para baixo são do JSON-RPC e do protocolo, e um erro do app com um deles
+    /// seria lido pelo cliente como outra coisa.
     pub fn app(code: i32, message: impl Into<String>) -> Self {
-        debug_assert!(code >= 1, "códigos do app começam em 1");
+        assert!(
+            code >= 1,
+            "RpcError::app: o código {code} é reservado; os códigos do app começam em 1"
+        );
         Self::new(code, message.into())
     }
 
