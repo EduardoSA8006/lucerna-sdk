@@ -355,7 +355,7 @@ impl CliApp {
 
     async fn watch(
         &self,
-        mut client: Client,
+        client: Client,
         topic: &str,
         json: bool,
         out: &mut (dyn Write + Send),

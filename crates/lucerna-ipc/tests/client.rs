@@ -69,7 +69,7 @@ async fn hold(mut c: RawConn) {
 #[tokio::test]
 async fn connect_call_subscribe_and_follow() {
     let (_t, p, _s) = start(demo()).await;
-    let mut c = Client::connect(&p, "tui", "demo").await.unwrap();
+    let c = Client::connect(&p, "tui", "demo").await.unwrap();
     assert_eq!(c.hello().topics, vec!["counter"]);
     let snap = c.subscribe(&["counter"]).await.unwrap();
     assert_eq!(snap[0].data, json!({"value":0}));
@@ -102,6 +102,56 @@ async fn concurrent_calls_get_their_own_answers() {
 }
 
 #[tokio::test]
+async fn one_task_reads_states_while_another_calls() {
+    let (_t, p, _s) = start(demo()).await;
+    let c = Arc::new(Client::connect(&p, "tui", "demo").await.unwrap());
+    c.subscribe(&["counter"]).await.unwrap();
+    let reader = {
+        let c = c.clone();
+        tokio::spawn(async move {
+            // Estados podem ser coalescidos: lê até ver o último valor.
+            let mut seen = Vec::new();
+            while let Some(s) = c.next_state().await {
+                let v = s.data["value"].as_i64().unwrap();
+                seen.push(v);
+                if v == 5 {
+                    break;
+                }
+            }
+            seen
+        })
+    };
+    for _ in 0..5 {
+        c.call("counter.add", Some(json!({"n": 1}))).await.unwrap();
+    }
+    let seen = tokio::time::timeout(Duration::from_secs(5), reader)
+        .await
+        .expect("a leitora não viu o valor 5")
+        .unwrap();
+    assert_eq!(seen.last(), Some(&5));
+    assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
+}
+
+#[tokio::test]
+async fn every_waiting_reader_sees_the_close() {
+    let (_t, p, s) = start(demo()).await;
+    let c = Arc::new(Client::connect(&p, "tui", "demo").await.unwrap());
+    let mut set = JoinSet::new();
+    for _ in 0..3 {
+        let c = c.clone();
+        set.spawn(async move { c.next_state().await });
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await; // as três esperando
+    s.abort();
+    while let Some(r) = tokio::time::timeout(Duration::from_secs(2), set.join_next())
+        .await
+        .expect("uma leitora não acordou com o fechamento")
+    {
+        assert!(r.unwrap().is_none());
+    }
+}
+
+#[tokio::test]
 async fn rpc_errors_and_missing_socket() {
     let (t, p, _s) = start(demo()).await;
     let c = Client::connect(&p, "tui", "demo").await.unwrap();
@@ -122,7 +172,7 @@ async fn rpc_errors_and_missing_socket() {
 #[tokio::test]
 async fn closed_resolves_when_server_goes_away() {
     let (_t, p, s) = start(demo()).await;
-    let mut c = Client::connect(&p, "tui", "demo").await.unwrap();
+    let c = Client::connect(&p, "tui", "demo").await.unwrap();
     s.abort();
     tokio::time::timeout(Duration::from_secs(1), c.closed())
         .await
@@ -167,7 +217,7 @@ async fn out_of_order_seq_is_dropped() {
         }
         hold(c).await;
     });
-    let mut c = Client::connect(&path, "tui", "demo").await.unwrap();
+    let c = Client::connect(&path, "tui", "demo").await.unwrap();
     let snap = c.subscribe(&["counter"]).await.unwrap();
     assert_eq!(snap[0].seq, 5);
     let s = c.next_state().await.unwrap();
@@ -201,7 +251,7 @@ async fn states_are_coalesced_per_topic_in_arrival_order() {
         answer(&mut c, &unsub, json!({})).await;
         // Fecha a conexão.
     });
-    let mut c = Client::connect(&path, "tui", "demo").await.unwrap();
+    let c = Client::connect(&path, "tui", "demo").await.unwrap();
     c.subscribe(&["a", "b", "c"]).await.unwrap();
     c.call("sync", None).await.unwrap();
     c.unsubscribe(&["c"]).await.unwrap();
@@ -339,7 +389,7 @@ async fn resubscribe_drops_pending_states_older_than_snapshot() {
         answer(&mut c, &sub, json!({"states": [st("a", 5)]})).await;
         // Fecha a conexão.
     });
-    let mut c = Client::connect(&path, "tui", "demo").await.unwrap();
+    let c = Client::connect(&path, "tui", "demo").await.unwrap();
     c.subscribe(&["a", "b"]).await.unwrap();
     c.call("sync", None).await.unwrap();
     let snap = c.subscribe(&["a"]).await.unwrap();
@@ -356,7 +406,7 @@ async fn resubscribe_drops_pending_states_older_than_snapshot() {
 #[tokio::test]
 async fn sequential_calls_without_draining_states_do_not_block() {
     let (_t, p, _s) = start(demo()).await;
-    let mut c = Client::connect(&p, "tui", "demo").await.unwrap();
+    let c = Client::connect(&p, "tui", "demo").await.unwrap();
     c.subscribe(&["counter"]).await.unwrap();
     for i in 0..400 {
         let r = tokio::time::timeout(

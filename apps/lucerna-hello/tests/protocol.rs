@@ -79,7 +79,7 @@ async fn request() {
 #[tokio::test]
 async fn subscription_snapshot_and_changes() {
     let r = start(None).await;
-    let mut c = r.client().await;
+    let c = r.client().await;
     let snap = c.subscribe(&["counter"]).await.unwrap();
     assert_eq!(snap.len(), 1);
     assert_eq!((snap[0].seq, &snap[0].data), (0, &json!({"value": 0})));
@@ -95,7 +95,7 @@ async fn subscription_snapshot_and_changes() {
 #[tokio::test]
 async fn two_clients() {
     let r = start(None).await;
-    let mut a = r.client().await;
+    let a = r.client().await;
     let b = r.client().await;
     a.subscribe(&["counter"]).await.unwrap();
     b.call("counter.add", Some(json!({"n": 1}))).await.unwrap();

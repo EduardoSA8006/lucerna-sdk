@@ -243,8 +243,17 @@ impl Client {
     /// com o retrato mais novo dele. Estados intermediários podem ter sido pulados
     /// (coalescidos); os que chegam com `seq` já visto são descartados.
     /// `None` quando a conexão fechou e não há mais estados pendentes.
-    pub async fn next_state(&mut self) -> Option<State> {
+    ///
+    /// Recebe `&self`: uma tarefa pode ler os estados enquanto outras chamam
+    /// métodos no mesmo `Arc<Client>`. Com várias tarefas lendo ao mesmo tempo,
+    /// cada estado vai para uma só delas.
+    pub async fn next_state(&self) -> Option<State> {
         loop {
+            // Registrado antes de olhar o mapa: um estado (ou o fechamento) que
+            // chegue entre a conferência e a espera não se perde.
+            let notified = self.ready.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             {
                 let mut calls = lock(&self.calls);
                 if let Some(topic) = calls.order.pop_front() {
@@ -257,8 +266,7 @@ impl Client {
                     return None;
                 }
             }
-            // `notify_one` guarda a licença se ninguém espera: nada se perde.
-            self.ready.notified().await;
+            notified.await;
         }
     }
 
@@ -430,6 +438,7 @@ async fn read_loop(
         // Largar os `oneshot` acorda quem espera com "conexão fechou".
         c.waiting.clear();
     }
-    ready.notify_one();
+    // Todos os que esperam em `next_state` precisam ver o fim.
+    ready.notify_waiters();
     closed.send_replace(true);
 }
