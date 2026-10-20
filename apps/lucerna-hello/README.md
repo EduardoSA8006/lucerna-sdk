@@ -34,13 +34,16 @@ O binário vai para `/usr/bin/lucerna-hello`; as unidades e o manifesto, para
 as pastas do systemd do usuário e do Lucerna:
 
 ```sh
-install -Dm755 target/release/lucerna-hello /usr/bin/lucerna-hello
-install -Dm644 systemd/lucerna-hello.socket systemd/lucerna-hello.service \
+sudo install -Dm755 target/release/lucerna-hello /usr/bin/lucerna-hello
+sudo install -Dm644 systemd/lucerna-hello.socket systemd/lucerna-hello.service \
     -t /usr/lib/systemd/user/
-install -Dm644 data/hello.json /usr/share/lucerna/apps/hello.json
+sudo install -Dm644 data/hello.json /usr/share/lucerna/apps/hello.json
 systemctl --user daemon-reload
 systemctl --user enable --now lucerna-hello.socket
 ```
+
+Num pacote, troque `/usr` pelo prefixo do empacotador (ex.: `$pkgdir/usr`) e
+tire o `sudo`; o `ExecStart=` da unidade aponta para `/usr/bin`.
 
 O systemd escuta em `$XDG_RUNTIME_DIR/lucerna/hello.sock` (pasta `0700`,
 socket `0600`) e sobe o serviço na primeira conexão; o serviço sai sozinho

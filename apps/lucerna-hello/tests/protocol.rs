@@ -115,30 +115,48 @@ async fn slow_client_on_a_stream() {
     .await
     .unwrap();
     tokio::time::sleep(Duration::from_secs(2)).await; // não lê: ~2000 quadros produzidos
-    // Para a produção antes de esvaziar: o laço termina na resposta do unsubscribe.
+    // Lê o que ficou no caminho: depois do que coube no socket vem só o quadro
+    // mais novo (acima de 1000), não a fila inteira.
+    let mut ticks = vec![];
+    while ticks.last().is_none_or(|&t| t <= 1000) {
+        let v = c.recv().await.unwrap().expect("conexão aberta"); // recv desiste em 5 s
+        if v["id"] == 1 {
+            continue; // a resposta do subscribe (o retrato, ainda vazio)
+        }
+        assert_eq!(v["method"], "lucerna.state", "{v}");
+        assert_eq!(v["params"]["data"]["bands"].as_array().unwrap().len(), 64);
+        ticks.push(v["params"]["data"]["tick"].as_u64().unwrap());
+        assert!(ticks.len() < 5000, "fila sem limite");
+    }
+    assert!(
+        ticks.windows(2).any(|w| w[1] - w[0] > 1),
+        "houve descarte de quadros intermediários"
+    );
+    // Para a produção e esvazia: o laço termina na resposta do unsubscribe.
     c.send(&json!({"jsonrpc":"2.0","id":2,"method":"lucerna.unsubscribe","params":{"topics":["ticks"]}}))
         .await
         .unwrap();
-    let mut ticks = vec![];
     loop {
-        let v = c.recv().await.unwrap().expect("conexão aberta"); // recv desiste em 5 s
+        let v = c.recv().await.unwrap().expect("conexão aberta");
         if v["id"] == 2 {
             assert_eq!(v["result"], json!({}));
             break;
         }
         if v["method"] == "lucerna.state" {
-            assert_eq!(v["params"]["data"]["bands"].as_array().unwrap().len(), 64);
             ticks.push(v["params"]["data"]["tick"].as_u64().unwrap());
         }
         assert!(ticks.len() < 5000, "fila sem limite");
     }
     assert!(ticks.windows(2).all(|w| w[0] < w[1]), "{ticks:?}");
-    assert!(
-        ticks.windows(2).any(|w| w[1] - w[0] > 1),
-        "houve descarte de quadros intermediários"
-    );
-    // O produtor para sem assinante.
+    // O produtor para sem assinante: o `seq` não anda mais.
     tokio::time::timeout(Duration::from_secs(1), r.ticks().wait_unsubscribed())
         .await
         .unwrap();
+    let seq = r.ticks().current().seq;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        r.ticks().current().seq,
+        seq,
+        "o produtor continuou sem assinante"
+    );
 }

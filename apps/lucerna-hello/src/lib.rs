@@ -9,12 +9,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use clap::{Arg, Command, value_parser};
+use lucerna_cli::clap::{Arg, Command, value_parser};
 use lucerna_cli::{Call, CliApp, CliCommand};
 use lucerna_ipc::Topic;
-use lucerna_protocol::{BarItem, RpcError};
-use lucerna_service::{ServiceBuilder, Shell};
+use lucerna_service::{BarItem, RpcError, ServiceBuilder, Shell};
 use serde_json::{Value, json};
+use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 /// Id do app.
@@ -27,6 +27,10 @@ const BANDS: usize = 64;
 const TICK: Duration = Duration::from_millis(1);
 
 /// O serviço montado e os tópicos dele.
+///
+/// O produtor do `ticks` vive enquanto [`Hello::producer`] viver: ao usar só o
+/// `service`, mantenha o resto do `Hello` no escopo (um `let h = hello();`
+/// seguido de `h.service.run()` já faz isso).
 pub struct Hello {
     /// O serviço, pronto para `run` ou `run_with`.
     pub service: ServiceBuilder,
@@ -34,6 +38,18 @@ pub struct Hello {
     pub counter: Topic,
     /// O tópico contínuo `ticks`.
     pub ticks: Topic,
+    /// A tarefa que produz o `ticks`; largá-la para a produção.
+    pub producer: Producer,
+}
+
+/// A tarefa que produz o `ticks`. Abortada quando cai.
+#[must_use = "o ticks para de ser produzido quando o Producer cai"]
+pub struct Producer(JoinHandle<()>);
+
+impl Drop for Producer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// O contador e para onde cada mudança vai.
@@ -117,11 +133,12 @@ pub fn hello() -> Hello {
         async move { r }
     });
 
-    tokio::spawn(produce_ticks(ticks.clone()));
+    let producer = Producer(tokio::spawn(produce_ticks(ticks.clone())));
     Hello {
         service,
         counter,
         ticks,
+        producer,
     }
 }
 
@@ -132,10 +149,13 @@ async fn produce_ticks(ticks: Topic) {
         ticks.wait_subscribed().await;
         let mut every = tokio::time::interval(TICK);
         every.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        // Um future só para o ciclo inteiro, em vez de um novo a cada quadro.
+        let stop = ticks.wait_unsubscribed();
+        tokio::pin!(stop);
         loop {
             tokio::select! {
                 _ = every.tick() => {}
-                _ = ticks.wait_unsubscribed() => break,
+                _ = &mut stop => break,
             }
             k += 1;
             ticks.publish(json!({"tick": k, "bands": bands(k)}));
@@ -177,7 +197,7 @@ pub fn cli() -> CliApp {
         ),
         to_call: |m| Call {
             method: "counter.add".into(),
-            params: Some(json!({"n": m.get_one::<i64>("n").copied().unwrap_or(0)})),
+            params: Some(json!({"n": *m.get_one::<i64>("n").expect("n é obrigatório")})),
         },
         render: Some(render_counter),
     })

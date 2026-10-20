@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use lucerna_hello::hello;
+use lucerna_hello::{Producer, hello};
 use lucerna_ipc::raw::RawConn;
 use lucerna_ipc::{Client, Topic};
 use tempfile::TempDir;
@@ -18,6 +18,7 @@ pub struct Running {
     _dir: TempDir,
     pub path: PathBuf,
     ticks: Topic,
+    _producer: Producer,
     task: JoinHandle<()>,
 }
 
@@ -35,6 +36,7 @@ pub async fn start(shell: Option<PathBuf>) -> Running {
         _dir: dir,
         path,
         ticks: h.ticks,
+        _producer: h.producer,
         task,
     }
 }
