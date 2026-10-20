@@ -122,10 +122,15 @@ fn cli_json_and_exit_codes() {
             .code(),
         Some(64)
     );
-    // Sem TUI: a ajuda, com 0.
-    let out = hello(t.path()).output().unwrap();
-    assert_eq!(out.status.code(), Some(0));
-    assert!(String::from_utf8_lossy(&out.stdout).contains("add"));
+    // Sem TUI: a ajuda, com 0, também para o `tui …` que o shell usaria.
+    for args in [&[][..], &["tui"], &["tui", "t_42", "--linha", "3"]] {
+        let out = hello(t.path()).args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("add"),
+            "{args:?}"
+        );
+    }
     let out = hello(t.path()).arg("--version").output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stdout).contains(env!("CARGO_PKG_VERSION")));

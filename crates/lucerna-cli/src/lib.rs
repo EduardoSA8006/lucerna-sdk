@@ -2,8 +2,9 @@
 //! Esqueleto da linha de comando dos apps do Lucerna.
 //!
 //! O app declara os subcomandos ([`CliCommand`]) e cada um vira um método do
-//! protocolo. O [`CliApp`] acrescenta os comuns (`status`, `watch <tópico>`), o
-//! oculto `serve` e a opção global `--json`, com a ajuda em português.
+//! protocolo. O [`CliApp`] acrescenta os comuns (`status`, `watch <tópico>`), os
+//! ocultos `serve` e `tui <args…>` e a opção global `--json`, com a ajuda em
+//! português.
 //!
 //! Códigos de saída: [`EXIT_OK`], [`EXIT_APP`], [`EXIT_NO_SERVICE`] e
 //! [`EXIT_USAGE`]; `--help`/`--version` saem com `0`.
@@ -44,7 +45,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Nomes que o [`CliApp`] declara sozinho.
-const RESERVED: [&str; 3] = ["status", "watch", "serve"];
+const RESERVED: [&str; 4] = ["status", "watch", "serve", "tui"];
 /// Ids e opções longas de argumento que o [`CliApp`] declara sozinho.
 const RESERVED_ARGS: [&str; 3] = ["help", "json", "version"];
 
@@ -62,7 +63,7 @@ pub struct Call {
 /// Um subcomando do app.
 ///
 /// Nomes reservados ao [`CliApp`]: o subcomando (nome e aliases) não pode ser
-/// `status`, `watch`, `serve` nem repetir outro subcomando do app; os
+/// `status`, `watch`, `serve`, `tui` nem repetir outro subcomando do app; os
 /// argumentos não podem usar os ids nem as opções longas `help`, `json` e
 /// `version`, nem a opção curta `-h`. [`CliApp::command`] entra em pânico com
 /// uma mensagem clara em qualquer desses casos.
@@ -81,8 +82,11 @@ pub struct CliCommand {
 /// O que o binário deve fazer com os argumentos.
 #[derive(Debug)]
 pub enum Invocation {
-    /// Sem subcomando: abrir a TUI.
-    Tui,
+    /// Abrir a TUI com estes argumentos: sem subcomando (lista vazia) ou com o
+    /// subcomando oculto `tui <args…>`, que é como o shell abre a TUI
+    /// (`tui.open`: `<app.tui> tui <args…>`). Depois do primeiro argumento,
+    /// tudo vai para a lista, mesmo o que começa com `-`.
+    Tui(Vec<OsString>),
     /// O subcomando oculto `serve`: rodar o serviço.
     Serve,
     /// Um subcomando da linha de comando: passe a [`CliApp::run`].
@@ -130,7 +134,7 @@ impl CliApp {
 
     /// Acrescenta um subcomando do app.
     ///
-    /// Entra em pânico com nome ou alias `status`, `watch`, `serve` ou
+    /// Entra em pânico com nome ou alias `status`, `watch`, `serve`, `tui` ou
     /// repetido, e com argumento `help`, `json`, `version` ou `-h` (veja
     /// [`CliCommand`]).
     pub fn command(mut self, c: CliCommand) -> Self {
@@ -167,8 +171,8 @@ impl CliApp {
         self
     }
 
-    /// O `clap::Command` completo: os subcomandos do app, `status`, `watch`, o
-    /// `serve` oculto e `--json`, com a ajuda em português.
+    /// O `clap::Command` completo: os subcomandos do app, `status`, `watch`, os
+    /// ocultos `serve` e `tui` e `--json`, com a ajuda em português.
     pub fn clap(&self) -> Command {
         let mut root = Command::new(self.bin.clone())
             .version(self.version.clone())
@@ -188,7 +192,18 @@ impl CliApp {
                             .help("O tópico a acompanhar."),
                     ),
             )
-            .subcommand(Command::new("serve").about("Roda o serviço.").hide(true));
+            .subcommand(Command::new("serve").about("Roda o serviço.").hide(true))
+            .subcommand(
+                Command::new("tui").about("Abre a TUI.").hide(true).arg(
+                    Arg::new("args")
+                        .value_name("args")
+                        .num_args(0..)
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true)
+                        .value_parser(clap::value_parser!(OsString))
+                        .help("Argumentos da TUI (a nota, a tarefa)."),
+                ),
+            );
         localize(root, &self.bin)
             .arg(
                 Arg::new("version")
@@ -217,10 +232,17 @@ impl CliApp {
     {
         let m = self.clap().try_get_matches_from(args)?;
         let Some((name, sub)) = m.subcommand() else {
-            return Ok(Invocation::Tui);
+            return Ok(Invocation::Tui(Vec::new()));
         };
         let kind = match name {
             "serve" => return Ok(Invocation::Serve),
+            "tui" => {
+                let args = sub
+                    .get_many::<OsString>("args")
+                    .map(|v| v.cloned().collect())
+                    .unwrap_or_default();
+                return Ok(Invocation::Tui(args));
+            }
             "status" => RunKind::Status,
             "watch" => RunKind::Watch(sub.get_one::<String>("topic").cloned().unwrap_or_default()),
             _ => {

@@ -101,7 +101,7 @@ O shell também atende um socket, `$XDG_RUNTIME_DIR/lucerna/shell.sock`, no **me
 | `bar.set {id, icon, text?, ends_at?, panel?}` | põe (ou atualiza) um item na barra: ícone, um texto curto (um número) e, opcional, um timer contado pelo shell até `ends_at`; `panel` diz se o clique abre o painel do app |
 | `bar.clear {id}` | tira o item |
 | `dnd.request {reason}` / `dnd.release` | pede para ligar / devolve o "não perturbe". O shell decide, mostra quem ligou (o nome do app e o `reason`) e desliga quando todos os que pediram devolveram (ou quando a conexão do app fecha) |
-| `tui.open {args?}` | abre o terminal do usuário com a TUI do app, já com os argumentos (a nota, a tarefa) — sempre para o usuário; a comunicação nunca depende disso |
+| `tui.open {args?}` | abre o terminal do usuário com a TUI do app, já com os argumentos (a nota, a tarefa) — sempre para o usuário; a comunicação nunca depende disso. O shell roda `<app.tui> tui <args…>` (o `app.tui` do manifesto, o subcomando oculto `tui` e cada argumento como um argumento separado, sem passar por shell); sem `args`, só `<app.tui> tui` |
 | `panel.open {page?}` | abre o painel do app no shell, opcionalmente numa página |
 
 - Os itens da barra e o pedido de não perturbe **pertencem à conexão**: se o serviço do app sai (ociosidade, queda), o shell os desfaz sozinho. Por isso um serviço com um item na barra (o pomodoro rodando) ou com um não perturbe pedido não sai por ociosidade enquanto ele existir: o SDK conta os dois como trabalho pendente (decisão da revisão final: o não perturbe some com a saída do serviço tanto quanto a barra).
@@ -154,11 +154,11 @@ Os crates do SDK seguem semver próprio; a versão do protocolo que cada versão
 
 ## Linha de comando e binários
 
-- **Um binário por app** (decisão do construtor do documento): `lucerna-<app>` é tudo. Sem argumentos, abre a TUI; com um subcomando, vira cliente da linha de comando; com o subcomando oculto `serve`, é o serviço (o `ExecStart` da unidade do systemd é `lucerna-<app> serve`). O `lucerna-cli` e o `lucerna-service` se compõem num `main` só, e o `lucerna-hello` mostra esse molde, que todos os apps copiam.
+- **Um binário por app** (decisão do construtor do documento): `lucerna-<app>` é tudo. Sem argumentos, abre a TUI; com um subcomando, vira cliente da linha de comando; com o subcomando oculto `serve`, é o serviço (o `ExecStart` da unidade do systemd é `lucerna-<app> serve`); com o subcomando oculto `tui <args…>`, abre a TUI com esses argumentos (é o que o shell roda no `tui.open`; depois do primeiro argumento, tudo vai para a TUI, mesmo o que começa com `-`). `lucerna-<app>` sem nada é o mesmo que `lucerna-<app> tui` sem argumentos (decisão da revisão final: um subcomando explícito evita que um argumento da TUI, como `t_42`, seja lido como um subcomando desconhecido). O `lucerna-cli` e o `lucerna-service` se compõem num `main` só, e o `lucerna-hello` mostra esse molde, que todos os apps copiam.
 - O SDK traz o esqueleto da linha de comando: com um subcomando, o binário conecta, faz o aperto de mão (`client` = `cli`), chama o método e imprime o resultado.
 - Os subcomandos são declarados pelo app (nome, ajuda em português, argumentos) e cada um vira um método do protocolo. Ex.: `lucerna-routine add "estudar amanhã 19h"` → `tasks.add {"text":"estudar amanhã 19h"}`; `lucerna-routine focus start --tag estudo` → `focus.start {...}`.
 - Saída legível por padrão; `--json` imprime o `result` cru (para scripts). Código de saída `0` no sucesso, `1` com erro do app, `2` sem conseguir falar com o serviço e `64` com uso errado da linha de comando (decisão do plano de implementação: o `2` padrão do clap colidiria com "sem serviço").
-- Subcomandos comuns que todo app ganha: `status` (o retrato dos tópicos) e `watch <tópico>` (acompanha as mudanças no terminal, útil para depurar).
+- Subcomandos comuns que todo app ganha: `status` (o retrato dos tópicos) e `watch <tópico>` (acompanha as mudanças no terminal, útil para depurar). `status`, `watch`, `serve` e `tui` são nomes reservados: um app não declara subcomando com eles.
 
 ## Crates do `lucerna-sdk`
 

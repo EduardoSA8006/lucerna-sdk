@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -143,7 +144,7 @@ fn spawn_run(args: &'static [&'static str], env: &Env) -> (JoinHandle<i32>, Shar
 #[test]
 fn parse_dispatch() {
     let a = app();
-    assert!(matches!(a.parse_from(["demo"]).unwrap(), Invocation::Tui));
+    assert!(matches!(a.parse_from(["demo"]).unwrap(), Invocation::Tui(v) if v.is_empty()));
     assert!(matches!(
         a.parse_from(["demo", "serve"]).unwrap(),
         Invocation::Serve
@@ -176,6 +177,45 @@ fn parse_dispatch() {
         !help.contains("Usage:") && !help.contains("Print help"),
         "{help}"
     );
+}
+
+#[test]
+fn tui_subcommand_carries_the_arguments() {
+    let a = app();
+    let tui = |args: &[&str]| match a.parse_from(args).unwrap() {
+        Invocation::Tui(v) => v,
+        other => panic!("não é a TUI: {other:?}"),
+    };
+    assert_eq!(tui(&["demo", "tui", "t_42"]), vec![OsString::from("t_42")]);
+    assert!(tui(&["demo", "tui"]).is_empty());
+    // Depois do primeiro argumento, tudo é da TUI, mesmo o que parece opção.
+    assert_eq!(
+        tui(&["demo", "tui", "nota", "-x", "--linha", "3"]),
+        ["nota", "-x", "--linha", "3"].map(OsString::from)
+    );
+    // Argumento que não é UTF-8 passa intacto.
+    use std::os::unix::ffi::OsStringExt;
+    let raw = OsString::from_vec(vec![b'n', 0xff]);
+    let got = match a
+        .parse_from([OsString::from("demo"), "tui".into(), raw.clone()])
+        .unwrap()
+    {
+        Invocation::Tui(v) => v,
+        other => panic!("não é a TUI: {other:?}"),
+    };
+    assert_eq!(got, vec![raw]);
+    let help = a.clap().render_help().to_string();
+    assert!(!help.contains("tui"), "o tui é oculto: {help}");
+}
+
+#[test]
+#[should_panic(expected = "tui")]
+fn tui_is_a_reserved_name() {
+    let _ = app().command(CliCommand {
+        command: Command::new("tui"),
+        to_call: noop,
+        render: None,
+    });
 }
 
 #[test]
