@@ -6,7 +6,7 @@
 
 use std::{
     fs, io,
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -31,11 +31,13 @@ pub struct Env {
 impl Env {
     /// Lê as variáveis do processo; variáveis vazias contam como ausentes.
     pub fn from_process() -> Env {
-        fn var(name: &str) -> Option<PathBuf> {
-            std::env::var_os(name)
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        }
+        Env::from_lookup(|name| std::env::var_os(name))
+    }
+
+    /// Monta o `Env` a partir de uma função de consulta; valores vazios
+    /// contam como ausentes.
+    pub fn from_lookup(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> Env {
+        let var = |name: &str| get(name).filter(|v| !v.is_empty()).map(PathBuf::from);
         Env {
             home: var("HOME"),
             xdg_data_home: var("XDG_DATA_HOME"),
@@ -91,10 +93,12 @@ pub enum PathsError {
     NoRuntimeDir,
 }
 
-/// Confere o id do app: `^[a-z][a-z0-9-]{0,31}$`.
+/// Confere o id do app: `^[a-z][a-z0-9-]{0,31}$`. O id `shell` é reservado
+/// (o socket colidiria com o `shell.sock`).
 pub fn validate_app_id(id: &str) -> Result<(), PathsError> {
     let bytes = id.as_bytes();
-    let ok = !bytes.is_empty()
+    let ok = id != "shell"
+        && !bytes.is_empty()
         && bytes.len() <= 32
         && bytes[0].is_ascii_lowercase()
         && bytes[1..]
@@ -177,11 +181,35 @@ pub fn manifest_dirs(env: &Env) -> Vec<PathBuf> {
     dirs
 }
 
-/// Cria a pasta (com os pais) e força o modo `0700`, mesmo que já existisse.
+/// Cria a pasta com modo `0700`, corrigindo o modo se ela já existia.
+///
+/// Só o último nível é privado: os pais são criados com o modo padrão. Se o
+/// caminho já existir, precisa ser uma pasta de verdade (nem link simbólico,
+/// nem arquivo) e pertencer ao usuário atual; senão devolve erro.
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    let md = fs::symlink_metadata(dir)?;
+    if !md.file_type().is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} existe e não é uma pasta de verdade", dir.display()),
+        ));
+    }
+    if md.uid() != fs::metadata("/proc/self")?.uid() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} pertence a outro usuário", dir.display()),
+        ));
+    }
+    if md.permissions().mode() & 0o777 != 0o700 {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }

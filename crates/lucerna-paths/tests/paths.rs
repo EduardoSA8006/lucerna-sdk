@@ -105,3 +105,110 @@ fn private_dir_is_0700_even_if_it_existed() {
         0o700
     );
 }
+
+fn mode(p: &std::path::Path) -> u32 {
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn private_dir_rejects_symlink_and_leaves_target_alone() {
+    let t = tempfile::tempdir().unwrap();
+    let target = t.path().join("alvo");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = t.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(create_private_dir(&link).is_err());
+    assert_eq!(mode(&target), 0o755);
+}
+
+#[test]
+fn private_dir_rejects_regular_file() {
+    let t = tempfile::tempdir().unwrap();
+    let f = t.path().join("arq");
+    std::fs::write(&f, "x").unwrap();
+    assert!(create_private_dir(&f).is_err());
+}
+
+#[test]
+fn private_dir_creates_nested_with_private_last_level() {
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("a/b/lucerna");
+    create_private_dir(&d).unwrap();
+    assert_eq!(mode(&d), 0o700);
+    assert!(d.parent().unwrap().is_dir());
+}
+
+#[test]
+fn private_dir_already_0700_is_ok() {
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path().join("p");
+    create_private_dir(&d).unwrap();
+    create_private_dir(&d).unwrap();
+    assert_eq!(mode(&d), 0o700);
+}
+
+#[test]
+fn shell_id_is_reserved() {
+    assert!(matches!(
+        validate_app_id("shell"),
+        Err(PathsError::InvalidAppId(_))
+    ));
+    assert!(validate_app_id("shell2").is_ok());
+}
+
+#[test]
+fn missing_or_relative_home_is_no_home() {
+    for home in [None, Some(PathBuf::from("rel"))] {
+        let e = Env {
+            home,
+            ..Env::default()
+        };
+        let p = AppPaths::new("a", &e).unwrap();
+        let err = p.data_dir().unwrap_err();
+        assert!(matches!(err, PathsError::NoHome));
+        assert_eq!(err.to_string(), "HOME não está definido.");
+        assert!(p.config_file().is_err() && p.cache_dir().is_err());
+    }
+}
+
+#[test]
+fn from_lookup_treats_empty_as_absent() {
+    let e = Env::from_lookup(|n| match n {
+        "HOME" => Some("/home/u".into()),
+        "XDG_DATA_HOME" | "XDG_RUNTIME_DIR" => Some("".into()),
+        _ => None,
+    });
+    assert_eq!(e.home, Some(PathBuf::from("/home/u")));
+    assert_eq!(e.xdg_data_home, None);
+    assert_eq!(e.xdg_runtime_dir, None);
+}
+
+#[test]
+fn manifest_dirs_without_home() {
+    assert_eq!(
+        manifest_dirs(&Env::default()),
+        vec![PathBuf::from("/usr/share/lucerna/apps")]
+    );
+}
+
+#[test]
+fn runtime_dir_is_lucerna_subdir() {
+    let p = AppPaths::new("a", &env("/h")).unwrap();
+    assert_eq!(
+        p.runtime_dir().unwrap(),
+        PathBuf::from("/run/user/1000/lucerna")
+    );
+    assert_eq!(p.app(), "a");
+}
+
+#[test]
+fn app_id_length_limits_and_message() {
+    assert!(validate_app_id(&"a".repeat(32)).is_ok());
+    assert!(validate_app_id(&"a".repeat(33)).is_err());
+    assert!(validate_app_id("a-").is_ok());
+    assert_eq!(
+        validate_app_id("Bad").unwrap_err().to_string(),
+        "Nome de app inválido: \"Bad\" (use a-z, 0-9 e \"-\", começando por letra, até 32)."
+    );
+}
