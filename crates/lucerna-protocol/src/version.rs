@@ -42,7 +42,8 @@ impl FromStr for Version {
         let bad = || VersionError(s.to_string());
         let (major, minor) = s.split_once('.').ok_or_else(bad)?;
         let part = |p: &str| {
-            if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+            let leading_zero = p.len() > 1 && p.starts_with('0');
+            if p.is_empty() || leading_zero || !p.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(bad());
             }
             p.parse::<u32>().map_err(|_| bad())

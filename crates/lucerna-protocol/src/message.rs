@@ -96,7 +96,12 @@ impl Message {
             return Err(RpcError::invalid_request());
         };
         let outcome = match (obj.remove("result"), obj.remove("error")) {
-            (Some(result), None) => Ok(result),
+            (Some(result), None) => {
+                if id.is_none() {
+                    return Err(RpcError::invalid_request());
+                }
+                Ok(result)
+            }
             (None, Some(error)) => Err(serde_json::from_value::<RpcError>(error)
                 .map_err(|_| RpcError::invalid_request())?),
             _ => return Err(RpcError::invalid_request()),
