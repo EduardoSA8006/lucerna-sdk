@@ -65,17 +65,21 @@ fn app() -> CliApp {
                     .value_parser(value_parser!(i64))
                     .help("Quanto somar."),
             ),
-            to_call: |m| Call {
-                method: "counter.add".into(),
-                params: Some(json!({"n": m.get_one::<i64>("n").copied().unwrap()})),
+            to_call: |m| {
+                Ok(Call {
+                    method: "counter.add".into(),
+                    params: Some(json!({"n": m.get_one::<i64>("n").copied().unwrap()})),
+                })
             },
             render: Some(|v| format!("Contador: {}", v["value"])),
         })
         .command(CliCommand {
             command: Command::new("fail").about("Falha de propósito."),
-            to_call: |_| Call {
-                method: "app.fail".into(),
-                params: None,
+            to_call: |_| {
+                Ok(Call {
+                    method: "app.fail".into(),
+                    params: None,
+                })
             },
             render: None,
         })
@@ -218,6 +222,54 @@ fn tui_is_a_reserved_name() {
     });
 }
 
+#[tokio::test]
+async fn to_call_error_exits_64_without_connecting() {
+    let a = app().command(CliCommand {
+        command: Command::new("par").arg(Arg::new("n").required(true)),
+        to_call: |m| {
+            let n = m.get_one::<String>("n").unwrap();
+            if n.len() % 2 == 0 {
+                Ok(Call {
+                    method: "x".into(),
+                    params: None,
+                })
+            } else {
+                Err(format!("O valor {n} precisa ter um número par de letras."))
+            }
+        },
+        render: None,
+    });
+    // Sem serviço: um 2 aqui diria que tentou conectar.
+    let env = env_in(tempfile::tempdir().unwrap().path());
+    for (json, want) in [
+        (
+            false,
+            "erro: O valor abc precisa ter um número par de letras.\n\n\
+             Para mais informações, use '--help'.\n"
+                .to_string(),
+        ),
+        (
+            true,
+            json!({"error":{"message":"O valor abc precisa ter um número par de letras."}})
+                .to_string()
+                + "\n",
+        ),
+    ] {
+        let args: &[&str] = if json {
+            &["demo", "--json", "par", "abc"]
+        } else {
+            &["demo", "par", "abc"]
+        };
+        let Invocation::Cli(r) = a.parse_from(args).unwrap() else {
+            panic!("não é um subcomando da linha de comando");
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(a.run(r, &env, &mut out, &mut err).await, 64);
+        assert!(out.is_empty());
+        assert_eq!(String::from_utf8(err).unwrap(), want);
+    }
+}
+
 #[test]
 fn subcommand_help_is_portuguese_too() {
     let mut c = app().clap();
@@ -240,11 +292,11 @@ fn subcommand_help_is_portuguese_too() {
     assert_eq!(usage_exit(&e), 0);
 }
 
-fn noop(_: &clap::ArgMatches) -> Call {
-    Call {
+fn noop(_: &clap::ArgMatches) -> Result<Call, String> {
+    Ok(Call {
         method: "x".into(),
         params: None,
-    }
+    })
 }
 
 #[test]
@@ -299,9 +351,11 @@ fn reserved_argument_ids_panic() {
 fn reserved_command_names_panic() {
     let _ = app().command(CliCommand {
         command: Command::new("status"),
-        to_call: |_| Call {
-            method: "x".into(),
-            params: None,
+        to_call: |_| {
+            Ok(Call {
+                method: "x".into(),
+                params: None,
+            })
         },
         render: None,
     });
@@ -312,9 +366,11 @@ fn reserved_command_names_panic() {
 fn repeated_command_panics() {
     let _ = app().command(CliCommand {
         command: Command::new("add"),
-        to_call: |_| Call {
-            method: "x".into(),
-            params: None,
+        to_call: |_| {
+            Ok(Call {
+                method: "x".into(),
+                params: None,
+            })
         },
         render: None,
     });

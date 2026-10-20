@@ -195,17 +195,22 @@ pub fn cli() -> CliApp {
                 .value_parser(value_parser!(i64))
                 .help("Quanto somar (pode ser negativo)."),
         ),
-        to_call: |m| Call {
-            method: "counter.add".into(),
-            params: Some(json!({"n": *m.get_one::<i64>("n").expect("n é obrigatório")})),
+        to_call: |m| {
+            let n = m.get_one::<i64>("n").ok_or("Falta o n.")?;
+            Ok(Call {
+                method: "counter.add".into(),
+                params: Some(json!({ "n": n })),
+            })
         },
         render: Some(render_counter),
     })
     .command(CliCommand {
         command: Command::new("reset").about("Zera o contador."),
-        to_call: |_| Call {
-            method: "counter.reset".into(),
-            params: None,
+        to_call: |_| {
+            Ok(Call {
+                method: "counter.reset".into(),
+                params: None,
+            })
         },
         render: Some(render_counter),
     })
@@ -219,9 +224,12 @@ pub fn cli() -> CliApp {
                     .value_parser(["on", "off"])
                     .help("on liga, off desliga."),
             ),
-        to_call: |m| Call {
-            method: "quiet.set".into(),
-            params: Some(json!({"on": m.get_one::<String>("state").is_some_and(|s| s == "on")})),
+        to_call: |m| {
+            let on = m.get_one::<String>("state").is_some_and(|s| s == "on");
+            Ok(Call {
+                method: "quiet.set".into(),
+                params: Some(json!({ "on": on })),
+            })
         },
         render: None,
     })

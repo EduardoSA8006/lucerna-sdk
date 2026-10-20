@@ -74,7 +74,11 @@ pub struct CliCommand {
     /// O subcomando do clap: nome, ajuda em português e argumentos.
     pub command: Command,
     /// Transforma os argumentos lidos na chamada ao serviço.
-    pub to_call: fn(&ArgMatches) -> Call,
+    ///
+    /// Um `Err` é uso errado da linha de comando: [`CliApp::run`] escreve a
+    /// mensagem (em português, pronta para o usuário) e sai com [`EXIT_USAGE`],
+    /// sem conectar ao serviço.
+    pub to_call: fn(&ArgMatches) -> Result<Call, String>,
     /// Texto legível do resultado; `None` usa [`render_default`].
     pub render: Option<fn(&Value) -> String>,
 }
@@ -106,6 +110,8 @@ enum RunKind {
         call: Call,
         render: Option<fn(&Value) -> String>,
     },
+    /// O `to_call` recusou os argumentos, com esta mensagem.
+    Invalid(String),
     Status,
     Watch(String),
 }
@@ -252,9 +258,12 @@ impl CliApp {
                     .iter()
                     .find(|c| c.command.get_name() == name)
                     .expect("subcomando declarado");
-                RunKind::Call {
-                    call: (c.to_call)(sub),
-                    render: c.render,
+                match (c.to_call)(sub) {
+                    Ok(call) => RunKind::Call {
+                        call,
+                        render: c.render,
+                    },
+                    Err(msg) => RunKind::Invalid(msg),
                 }
             }
         };
@@ -268,7 +277,8 @@ impl CliApp {
     /// Com `--json`, todo erro sai em `err` como uma linha JSON e `out` fica vazio:
     /// erro do app (código `1`) como `{"error":{"code","message","data"?}}`; sem
     /// serviço (código `2`) como `{"error":{"message":"Sem conexão com o serviço …"}}`,
-    /// sem `code` (não há erro JSON-RPC; o código de saída distingue).
+    /// sem `code` (não há erro JSON-RPC; o código de saída distingue); argumentos
+    /// recusados pelo `to_call` (código `64`) também só com `message`.
     pub async fn run(
         &self,
         run: CliRun,
@@ -276,6 +286,9 @@ impl CliApp {
         out: &mut (dyn Write + Send),
         err: &mut (dyn Write + Send),
     ) -> i32 {
+        if let RunKind::Invalid(msg) = &run.kind {
+            return usage_error(err, msg, run.json);
+        }
         let path = match AppPaths::new(&self.app, env).and_then(|p| p.socket()) {
             Ok(p) => p,
             Err(e) => return self.no_service(err, &e.to_string(), run.json),
@@ -305,6 +318,7 @@ impl CliApp {
                     Err(e) => self.fail(e, Stage::Call, run.json, err),
                 }
             }
+            RunKind::Invalid(_) => unreachable!("tratado antes de conectar"),
             RunKind::Status => self.status(&client, run.json, out, err).await,
             RunKind::Watch(topic) => self.watch(client, &topic, run.json, out, err).await,
         }
@@ -448,6 +462,19 @@ impl CliApp {
             ),
         }
     }
+}
+
+/// Argumentos recusados pelo `to_call`: a mensagem (`erro: …` e a dica do
+/// `--help`, ou `{"error":{"message"}}` com `--json`) e o código [`EXIT_USAGE`].
+fn usage_error(err: &mut (dyn Write + Send), msg: &str, json: bool) -> i32 {
+    if json {
+        let v = serde_json::json!({ "error": { "message": msg } });
+        let _ = writeln!(err, "{v}");
+    } else {
+        let _ = write!(err, "erro: {msg}\n\nPara mais informações, use '--help'.\n");
+    }
+    let _ = err.flush();
+    EXIT_USAGE
 }
 
 /// Em que ponto o erro aconteceu.
@@ -603,9 +630,11 @@ mod tests {
                     .required(true)
                     .value_parser(clap::value_parser!(i64)),
             ),
-            to_call: |_| Call {
-                method: "counter.add".into(),
-                params: None,
+            to_call: |_| {
+                Ok(Call {
+                    method: "counter.add".into(),
+                    params: None,
+                })
             },
             render: None,
         })
