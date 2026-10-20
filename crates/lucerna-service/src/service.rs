@@ -10,6 +10,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use crate::ServiceError;
 use crate::activation::listener_from_env;
 use crate::idle::{WorkTracker, wait_idle};
+use crate::shell::Shell;
 
 /// Ociosidade padrão: 60 s sem clientes e sem trabalho pendente.
 pub const DEFAULT_IDLE: Duration = Duration::from_secs(60);
@@ -23,16 +24,19 @@ pub struct ServiceBuilder {
     server: ServerBuilder,
     idle: Duration,
     work: WorkTracker,
+    shell: Shell,
 }
 
 impl ServiceBuilder {
     /// Começa o serviço do app `app`, na versão `version`.
     pub fn new(app: &str, version: &str) -> Self {
+        let work = WorkTracker::new();
         ServiceBuilder {
             app: app.to_string(),
             server: ServerBuilder::new(app, version),
             idle: DEFAULT_IDLE,
-            work: WorkTracker::new(),
+            shell: Shell::new(app, work.clone()),
+            work,
         }
     }
 
@@ -51,6 +55,14 @@ impl ServiceBuilder {
     /// O contador de trabalho pendente do serviço.
     pub fn work(&self) -> WorkTracker {
         self.work.clone()
+    }
+
+    /// Os pedidos ao shell (barra, não perturbe, TUI, painel).
+    ///
+    /// Os itens da barra contam como trabalho pendente em [`work`](Self::work).
+    /// A conexão ao `shell.sock` existe enquanto o serviço roda.
+    pub fn shell(&self) -> Shell {
+        self.shell.clone()
     }
 
     /// Roda o serviço com o ambiente do processo.
@@ -86,7 +98,8 @@ impl ServiceBuilder {
     /// Roda o serviço em `listener` até a ociosidade.
     ///
     /// Não trata sinais (isso é do [`run`](Self::run)); para parar antes, largue
-    /// o future. `shell_socket` ainda não é usado.
+    /// o future. Com `shell_socket`, mantém a conexão ao shell (ver
+    /// [`shell`](Self::shell)) até sair.
     pub async fn run_with(
         self,
         listener: tokio::net::UnixListener,
@@ -102,7 +115,8 @@ impl ServiceBuilder {
         shell_socket: Option<PathBuf>,
         stop: impl Future<Output = ()>,
     ) -> Result<(), ServiceError> {
-        let _ = shell_socket;
+        // A conexão ao shell fecha quando o serviço para (o guarda cai aqui).
+        let _shell_task = shell_socket.map(|p| self.shell.spawn(p));
         let server = self.server.build();
         let idle = wait_idle(server.connections(), self.work.watch(), self.idle);
         tokio::select! {

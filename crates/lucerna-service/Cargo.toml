@@ -1,6 +1,6 @@
 [package]
 name = "lucerna-service"
-description = "Esqueleto do serviço de um app do Lucerna: ativação pelo systemd, saída por ociosidade e o servidor do protocolo."
+description = "Esqueleto do serviço de um app do Lucerna: ativação pelo systemd, saída por ociosidade, o servidor do protocolo e a conexão ao shell."
 readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
@@ -15,12 +15,14 @@ categories.workspace = true
 [dependencies]
 lucerna-ipc.workspace = true
 lucerna-paths.workspace = true
+lucerna-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

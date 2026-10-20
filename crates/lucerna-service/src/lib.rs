@@ -2,11 +2,14 @@
 //! Esqueleto do serviço de um app do Lucerna.
 //!
 //! Compõe o servidor do [`lucerna_ipc`] com a ativação pelo systemd (ou o socket
-//! criado à mão, no desenvolvimento) e a saída por ociosidade.
+//! criado à mão, no desenvolvimento), a saída por ociosidade e a conexão ao
+//! `shell.sock` ([`Shell`]). [`testing::FakeShell`] serve aos testes dos apps.
 
 pub mod activation;
 pub mod idle;
 pub mod service;
+pub mod shell;
+pub mod testing;
 
 use std::io;
 use std::path::PathBuf;
@@ -16,6 +19,7 @@ use lucerna_paths::PathsError;
 pub use activation::{Activation, SocketGuard};
 pub use idle::{WorkGuard, WorkTracker};
 pub use service::{DEFAULT_IDLE, ServiceBuilder};
+pub use shell::{Shell, ShellTask, backoff};
 
 /// Erros ao subir ou rodar o serviço.
 #[derive(Debug, thiserror::Error)]

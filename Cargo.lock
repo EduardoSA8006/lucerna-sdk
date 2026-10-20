@@ -139,6 +139,8 @@ version = "0.1.0"
 dependencies = [
  "lucerna-ipc",
  "lucerna-paths",
+ "lucerna-protocol",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
