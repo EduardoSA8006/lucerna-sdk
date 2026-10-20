@@ -31,8 +31,18 @@ use crate::topic::{SubscriberGuard, Topic, TopicKind};
 
 /// Tamanho da fila de respostas de cada conexão.
 const RESPONSE_QUEUE: usize = 64;
-/// Quanto o escritor ainda tenta mandar o que está na fila quando a conexão fecha.
+/// Quanto a conexão ainda espera, ao fechar, os métodos em andamento e o escritor.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+// `errno` do Linux com que o `accept` pode falhar por falta de recurso.
+/// Sem memória.
+const ENOMEM: i32 = 12;
+/// Tabela de arquivos do sistema cheia.
+const ENFILE: i32 = 23;
+/// Limite de descritores do processo.
+const EMFILE: i32 = 24;
+/// Sem espaço de buffer.
+const ENOBUFS: i32 = 105;
 
 type BoxFuture = Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send>>;
 type Handler = Arc<dyn Fn(Option<Value>) -> BoxFuture + Send + Sync>;
@@ -169,7 +179,10 @@ impl Server {
                         | io::ErrorKind::ConnectionReset
                         | io::ErrorKind::Interrupted => {}
                         // Sem descritores ou sem memória: espera um pouco e tenta de novo.
-                        _ if matches!(e.raw_os_error(), Some(12 | 23 | 24 | 105)) => {
+                        _ if matches!(
+                            e.raw_os_error(),
+                            Some(ENOMEM | ENFILE | EMFILE | ENOBUFS)
+                        ) => {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                         _ => return Err(e),
@@ -197,25 +210,38 @@ impl Server {
             dirty: dirty_tx,
             pending: pending.clone(),
             subs: HashMap::new(),
+            sub_tasks: JoinSet::new(),
             tasks: JoinSet::new(),
         };
 
         let writer = write_loop(wr, resp_rx, dirty_rx, pending);
         tokio::pin!(writer);
-        let writer_alive = {
+        let end = {
             let reader = conn.read_loop(LineReader::new(rd, self.inner.max_message));
             tokio::pin!(reader);
             tokio::select! {
-                _ = &mut reader => true,
-                _ = &mut writer => false,
+                end = &mut reader => end,
+                _ = &mut writer => return, // o escritor falhou: larga tudo
             }
         };
-        // Aborta as tarefas da conexão e devolve os assinantes.
-        drop(conn);
-        if writer_alive {
-            // Manda o que já estava na fila (o erro de quem causou o fechamento).
-            let _ = tokio::time::timeout(FLUSH_TIMEOUT, writer).await;
+        let deadline = tokio::time::Instant::now() + FLUSH_TIMEOUT;
+        if end == End::Eof {
+            // Fim limpo (pode ser só um meio fechamento, como no `echo … | socat`):
+            // as assinaturas saem já, mas os métodos em andamento terminam e
+            // respondem, dentro do limite.
+            conn.subs.clear();
+            conn.sub_tasks.abort_all();
+            let methods = async { while conn.tasks.join_next().await.is_some() {} };
+            tokio::select! {
+                _ = tokio::time::timeout_at(deadline, methods) => {}
+                _ = &mut writer => return,
+            }
         }
+        // Aborta o que sobrou e devolve os assinantes.
+        drop(conn);
+        // Manda o que já estava na fila (o erro de quem causou o fechamento, as
+        // respostas dos métodos que terminaram).
+        let _ = tokio::time::timeout_at(deadline, writer).await;
     }
 
     /// Quantas conexões estão abertas agora.
@@ -282,6 +308,15 @@ impl Drop for Subscription {
     }
 }
 
+/// Como o leitor terminou.
+#[derive(PartialEq, Eq)]
+enum End {
+    /// Fim do fluxo, sem erro: os métodos em andamento ainda respondem.
+    Eof,
+    /// Erro de E/S, mensagem grande demais ou versão incompatível: fecha já.
+    Abort,
+}
+
 /// Estado do leitor de uma conexão.
 struct Conn {
     server: Arc<Inner>,
@@ -290,21 +325,26 @@ struct Conn {
     dirty: mpsc::Sender<()>,
     pending: Pending,
     subs: HashMap<String, Subscription>,
+    /// Tarefas das assinaturas (uma por tópico assinado).
+    sub_tasks: JoinSet<()>,
+    /// Tarefas dos métodos do app.
     tasks: JoinSet<()>,
 }
 
 impl Conn {
-    async fn read_loop<R: AsyncRead + Unpin>(&mut self, mut lines: LineReader<R>) {
+    async fn read_loop<R: AsyncRead + Unpin>(&mut self, mut lines: LineReader<R>) -> End {
         loop {
             while self.tasks.try_join_next().is_some() {}
+            while self.sub_tasks.try_join_next().is_some() {}
             let line = match lines.next_line().await {
                 Ok(Some(line)) => line,
-                Ok(None) | Err(FrameError::Io(_)) => return,
+                Ok(None) => return End::Eof,
+                Err(FrameError::Io(_)) => return End::Abort,
                 Err(FrameError::TooLarge) => {
                     // O resto da linha não foi lido: a conexão fecha.
                     let e = RpcError::message_too_large(self.server.max_message);
                     self.reply(None, Err(e)).await;
-                    return;
+                    return End::Abort;
                 }
                 Err(FrameError::InvalidUtf8) => {
                     self.reply(None, Err(RpcError::parse_error())).await;
@@ -314,7 +354,7 @@ impl Conn {
             match Message::parse(&line) {
                 Ok(Message::Request(r)) => {
                     if self.request(r).await.is_break() {
-                        return;
+                        return End::Abort;
                     }
                 }
                 Ok(Message::Notification(n)) => self.notification(n).await,
@@ -453,6 +493,9 @@ impl Conn {
         let mut states = Vec::new();
         let mut fresh = Vec::new();
         for t in topics {
+            // Antes do retrato e da tarefa nova: tirar depois apagaria um retrato
+            // mais novo que a tarefa (noutra thread) já tivesse deixado ali.
+            self.pending.lock().remove(t.name());
             let mut rx = t.receiver();
             states.push(rx.borrow_and_update().clone());
             let guard = t.guard();
@@ -464,7 +507,7 @@ impl Conn {
         self.reply(Some(id), Ok(result)).await;
         for (t, rx, guard) in fresh {
             let name = t.name().to_string();
-            let task = self.tasks.spawn(watch_topic(
+            let task = self.sub_tasks.spawn(watch_topic(
                 name.clone(),
                 rx,
                 self.pending.clone(),
@@ -478,7 +521,6 @@ impl Conn {
                     _guard: guard,
                 },
             );
-            self.pending.lock().remove(&name);
         }
     }
 
@@ -524,6 +566,11 @@ async fn write_loop<W: AsyncWrite + Unpin>(
             },
             Some(()) = dirty.recv() => {
                 let states = std::mem::take(&mut *pending.lock());
+                // Respostas que chegaram enquanto isso (noutra thread) saem antes:
+                // a resposta de um `subscribe` nunca fica atrás de um estado novo.
+                while let Ok(m) = resp.try_recv() {
+                    write_message(&mut wr, &m).await?;
+                }
                 for state in states.into_values() {
                     let n = Notification {
                         method: STATE.to_string(),

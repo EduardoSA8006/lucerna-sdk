@@ -467,3 +467,89 @@ fn repeated_topic_names_are_refused() {
     b.topic("a", Value::Null);
     b.stream("a");
 }
+
+#[tokio::test]
+async fn notification_then_close_still_runs_the_method() {
+    let (_t, p, _s) = start(demo()).await;
+    let mut c = ready(&p).await;
+    c.send(&json!({"jsonrpc":"2.0","method":"counter.add","params":{"n":4}}))
+        .await
+        .unwrap();
+    drop(c);
+
+    // Outro cliente vê o efeito da notificação (no retrato ou numa mudança).
+    let mut d = ready(&p).await;
+    d.send(&req(1, "lucerna.subscribe", json!({"topics":["counter"]})))
+        .await
+        .unwrap();
+    let r = next(&mut d).await;
+    if r["result"]["states"][0]["data"]["value"] != 4 {
+        let r = next(&mut d).await;
+        assert_eq!(r["params"]["data"], json!({"value":4}));
+    }
+}
+
+#[tokio::test]
+async fn half_close_still_gets_the_slow_response() {
+    use tokio::io::AsyncWriteExt;
+    let (_t, p, _s) = start(demo()).await;
+    let stream = tokio::net::UnixStream::connect(&p).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    let lines = format!(
+        "{}\n{}\n",
+        req(
+            0,
+            "lucerna.hello",
+            json!({"protocol":"1.0","client":"t","app":"demo"})
+        ),
+        req(1, "slow.op", json!({}))
+    );
+    wr.write_all(lines.as_bytes()).await.unwrap();
+    wr.shutdown().await.unwrap(); // como o `echo … | socat`
+    let mut rd = LineReader::new(rd, MAX_MESSAGE);
+    let mut got = vec![];
+    while let Ok(Ok(Some(line))) =
+        tokio::time::timeout(Duration::from_secs(2), rd.next_line()).await
+    {
+        got.push(serde_json::from_str::<Value>(&line).unwrap());
+    }
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[1]["id"], 1);
+    assert_eq!(got[1]["result"], json!({}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subscribe_racing_publish_always_gets_the_last_seq() {
+    let mut b = ServerBuilder::new("demo", "0.1.0");
+    let ticks = b.stream("ticks");
+    let (_t, p, _s) = start(b).await;
+    for round in 0..200 {
+        let mut c = ready(&p).await;
+        let publisher = tokio::spawn({
+            let ticks = ticks.clone();
+            async move {
+                for k in 0..20 {
+                    ticks.publish(json!({ "k": k }));
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+        c.send(&req(1, "lucerna.subscribe", json!({"topics":["ticks"]})))
+            .await
+            .unwrap();
+        publisher.await.unwrap();
+        let last = ticks.current().seq;
+        let mut seen = next(&mut c).await["result"]["states"][0]["seq"]
+            .as_u64()
+            .unwrap();
+        while seen < last {
+            let r = c
+                .recv()
+                .await
+                .unwrap_or_else(|e| panic!("rodada {round}: viu {seen}, esperava {last}: {e}"))
+                .unwrap();
+            seen = r["params"]["seq"].as_u64().unwrap();
+        }
+        assert_eq!(seen, last, "rodada {round}");
+    }
+}

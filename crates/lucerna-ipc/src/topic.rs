@@ -23,6 +23,12 @@ struct Inner {
 }
 
 /// Um tópico do serviço. Clonar dá outra alça para o mesmo tópico.
+///
+/// O tópico guarda sempre o último retrato publicado, mesmo sem assinantes. Num
+/// tópico contínuo, "sem dado" (retrato `null`, `seq` 0) vale só antes do primeiro
+/// [`publish`](Topic::publish): quem assina depois de um ciclo de assinatura recebe o
+/// último quadro produzido. Se o próximo assinante deve ver vazio, o app publica
+/// `null` ao parar de produzir.
 #[derive(Clone)]
 pub struct Topic {
     inner: Arc<Inner>,
