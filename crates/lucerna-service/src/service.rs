@@ -1,0 +1,96 @@
+//! O serviço: o servidor do protocolo, a ativação e a saída por ociosidade.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use lucerna_ipc::ServerBuilder;
+use lucerna_paths::{AppPaths, Env, shell_socket};
+use tokio::signal::unix::{SignalKind, signal};
+
+use crate::ServiceError;
+use crate::activation::listener_from_env;
+use crate::idle::{WorkTracker, wait_idle};
+
+/// Ociosidade padrão: 60 s sem clientes e sem trabalho pendente.
+pub const DEFAULT_IDLE: Duration = Duration::from_secs(60);
+
+/// Variável que sobrepõe a ociosidade, em milissegundos (desenvolvimento e testes).
+const IDLE_ENV: &str = "LUCERNA_IDLE_TIMEOUT_MS";
+
+/// Monta e roda o serviço de um app.
+pub struct ServiceBuilder {
+    app: String,
+    server: ServerBuilder,
+    idle: Duration,
+    work: WorkTracker,
+}
+
+impl ServiceBuilder {
+    /// Começa o serviço do app `app`, na versão `version`.
+    pub fn new(app: &str, version: &str) -> Self {
+        ServiceBuilder {
+            app: app.to_string(),
+            server: ServerBuilder::new(app, version),
+            idle: DEFAULT_IDLE,
+            work: WorkTracker::new(),
+        }
+    }
+
+    /// O servidor do protocolo, para declarar tópicos e métodos.
+    pub fn server(&mut self) -> &mut ServerBuilder {
+        &mut self.server
+    }
+
+    /// Quanto tempo sem clientes e sem trabalho até o serviço sair.
+    ///
+    /// `LUCERNA_IDLE_TIMEOUT_MS`, se definida, vence este valor em [`run`](Self::run).
+    pub fn idle_timeout(&mut self, d: Duration) {
+        self.idle = d;
+    }
+
+    /// O contador de trabalho pendente do serviço.
+    pub fn work(&self) -> WorkTracker {
+        self.work.clone()
+    }
+
+    /// Roda o serviço com o ambiente do processo.
+    ///
+    /// Usa o socket do systemd ou cria um à mão, e sai em `Ok(())` por
+    /// ociosidade ou com `SIGTERM`/`SIGINT`.
+    pub async fn run(mut self) -> Result<(), ServiceError> {
+        let env = Env::from_process();
+        if let Some(ms) = std::env::var(IDLE_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            self.idle = Duration::from_millis(ms);
+        }
+        let paths = AppPaths::new(&self.app, &env)?;
+        let (listener, activation) = listener_from_env(&paths)?;
+        let shell = shell_socket(&env).ok();
+        let r = self.run_with(listener, shell).await;
+        drop(activation); // o socket à mão some só depois de parar de atender
+        r
+    }
+
+    /// Roda o serviço em `listener` até a ociosidade ou `SIGTERM`/`SIGINT`.
+    ///
+    /// `shell_socket` ainda não é usado.
+    pub async fn run_with(
+        self,
+        listener: tokio::net::UnixListener,
+        shell_socket: Option<PathBuf>,
+    ) -> Result<(), ServiceError> {
+        let _ = shell_socket;
+        let mut term = signal(SignalKind::terminate())?;
+        let mut int = signal(SignalKind::interrupt())?;
+        let server = self.server.build();
+        let idle = wait_idle(server.connections(), self.work.watch(), self.idle);
+        tokio::select! {
+            r = server.serve(listener) => r.map_err(ServiceError::Io),
+            _ = idle => Ok(()),
+            _ = term.recv() => Ok(()),
+            _ = int.recv() => Ok(()),
+        }
+    }
+}

@@ -134,6 +134,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucerna-service"
+version = "0.1.0"
+dependencies = [
+ "lucerna-ipc",
+ "lucerna-paths",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
