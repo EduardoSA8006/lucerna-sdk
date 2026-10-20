@@ -296,3 +296,169 @@ async fn shell_that_stops_answering_counts_as_down() {
     }
     assert_eq!(seen, vec![(json!("bar.set"), json!("5")); 2]);
 }
+
+/// Aceita uma conexão em `l` e responde ao aperto de mão como o shell.
+async fn accept_hello(l: &tokio::net::UnixListener) -> lucerna_ipc::raw::RawConn {
+    let (s, _) = tokio::time::timeout(Duration::from_secs(7), l.accept())
+        .await
+        .expect("nenhuma conexão em 7 s")
+        .unwrap();
+    let mut raw = lucerna_ipc::raw::RawConn::from_stream(s);
+    let hello = raw.recv().await.unwrap().unwrap();
+    assert_eq!(hello["method"], "lucerna.hello");
+    raw.send(&json!({"jsonrpc": "2.0", "id": hello["id"], "result": {
+        "protocol": "1.0", "app": "shell", "version": "0",
+        "topics": [], "streams": [], "methods": []}}))
+        .await
+        .unwrap();
+    raw
+}
+
+async fn reply_ok(raw: &mut lucerna_ipc::raw::RawConn, call: &Value) {
+    raw.send(&json!({"jsonrpc": "2.0", "id": call["id"], "result": {}}))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn is_connected_goes_false_when_the_task_ends() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("shell.sock");
+    let fake = FakeShell::start(&p).await;
+    let shell = Shell::new("demo", WorkTracker::new());
+    let task = shell.spawn(p.clone());
+    fake.wait_connected().await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !shell.is_connected() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(task);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while shell.is_connected() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("is_connected continua true depois de a tarefa parar");
+    fake.wait_disconnected().await;
+}
+
+#[tokio::test]
+async fn shell_that_closes_right_after_hello_makes_the_wait_grow() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("shell.sock");
+    let l = tokio::net::UnixListener::bind(&p).unwrap();
+    let shell = Shell::new("demo", WorkTracker::new());
+    let _task = shell.spawn(p.clone());
+    let mut at = Vec::new();
+    for _ in 0..5 {
+        let raw = accept_hello(&l).await;
+        at.push(tokio::time::Instant::now());
+        drop(raw); // fecha logo
+    }
+    let gaps: Vec<u128> = at.windows(2).map(|w| (w[1] - w[0]).as_millis()).collect();
+    // Esperas de 100, 200, 400 e 800 ms (mais o tempo da conexão).
+    assert!(gaps[3] >= 700, "a espera não cresceu: {gaps:?}");
+    assert!(gaps[3] > gaps[0] * 3, "a espera não cresceu: {gaps:?}");
+}
+
+#[tokio::test]
+async fn same_id_with_new_text_sends_another_bar_set() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("shell.sock");
+    let mut fake = FakeShell::start(&p).await;
+    let shell = Shell::new("demo", WorkTracker::new());
+    let _task = shell.spawn(p.clone());
+    fake.wait_connected().await;
+    shell.bar_set(item("1"));
+    assert_eq!(fake.next_call().await.1["text"], "1");
+    shell.bar_set(item("1")); // igual: nada
+    shell.bar_set(item("2"));
+    assert_eq!(
+        fake.next_call().await,
+        (
+            "bar.set".into(),
+            json!({"id":"c","icon":"tag","text":"2","panel":false})
+        )
+    );
+    fake.no_call_within(Duration::from_millis(300)).await;
+}
+
+#[tokio::test]
+async fn change_during_reapply_is_not_lost() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("shell.sock");
+    let l = tokio::net::UnixListener::bind(&p).unwrap();
+    let shell = Shell::new("demo", WorkTracker::new());
+    shell.bar_set(item("1"));
+    let _task = shell.spawn(p.clone());
+    let mut raw = accept_hello(&l).await;
+    let first = raw.recv().await.unwrap().unwrap();
+    assert_eq!(
+        (&first["method"], &first["params"]["text"]),
+        (&json!("bar.set"), &json!("1"))
+    );
+    // O shell segura a resposta; o app muda o item e põe outro.
+    shell.bar_set(item("2"));
+    shell.bar_set(BarItem {
+        id: "d".into(),
+        ..item("9")
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    reply_ok(&mut raw, &first).await;
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        let c = raw.recv().await.unwrap().unwrap();
+        got.push((c["params"]["id"].clone(), c["params"]["text"].clone()));
+        reply_ok(&mut raw, &c).await;
+    }
+    assert_eq!(
+        got,
+        vec![(json!("c"), json!("2")), (json!("d"), json!("9"))]
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), raw.recv())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn refused_request_is_not_repeated_and_the_session_goes_on() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("shell.sock");
+    let l = tokio::net::UnixListener::bind(&p).unwrap();
+    let shell = Shell::new("demo", WorkTracker::new());
+    shell.bar_set(item("1"));
+    let _task = shell.spawn(p.clone());
+    let mut raw = accept_hello(&l).await;
+    let c = raw.recv().await.unwrap().unwrap();
+    assert_eq!(c["method"], "bar.set");
+    raw.send(&json!({"jsonrpc": "2.0", "id": c["id"],
+        "error": {"code": 1, "message": "não"}}))
+        .await
+        .unwrap();
+    shell.dnd_request("foco");
+    let c = raw.recv().await.unwrap().unwrap();
+    assert_eq!(
+        (&c["method"], &c["params"]),
+        (&json!("dnd.request"), &json!({"reason": "foco"}))
+    );
+    reply_ok(&mut raw, &c).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), raw.recv())
+            .await
+            .is_err(),
+        "o bar.set recusado foi repetido"
+    );
+    // Mesma conexão: nenhuma reconexão.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), l.accept())
+            .await
+            .is_err()
+    );
+    assert!(shell.is_connected());
+}

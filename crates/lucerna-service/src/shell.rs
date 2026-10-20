@@ -9,6 +9,9 @@
 //!
 //! Os pedidos saem um por vez, cada um esperando a resposta (com prazo) antes do
 //! próximo, para chegarem ao shell na ordem. Sem shell, nada dá erro para o app.
+//!
+//! Um pedido recusado pelo shell (erro na resposta) vai para o stderr e não é
+//! repetido até o app mudar aquele item ou o shell reconectar.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -32,6 +35,10 @@ const SHELL_APP: &str = "shell";
 /// Prazo para conectar (com o aperto de mão) e para cada resposta do shell.
 /// Passou disso, a conexão conta como caída.
 const SHELL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Quanto uma sessão precisa durar para a espera crescente voltar ao início,
+/// quando o shell não respondeu nenhum pedido dela.
+const HEALTHY_SESSION: Duration = Duration::from_secs(1);
 
 /// Teto da espera entre tentativas de conexão.
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
@@ -74,6 +81,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 ///
 /// Nenhum método é `async` nem devolve erro: sem shell, os pedidos viram nada
 /// (os itens da barra e o não perturbe ficam guardados para quando ele voltar).
+/// Um pedido recusado pelo shell não é repetido até o app mudar aquele item
+/// (ou o não perturbe) ou o shell reconectar.
 #[derive(Clone)]
 pub struct Shell {
     inner: Arc<Inner>,
@@ -148,7 +157,8 @@ impl Shell {
         self.action(PANEL_OPEN, to_value(&PanelOpenParams { page }));
     }
 
-    /// Se o shell está conectado agora (aperto de mão feito).
+    /// Se o shell está conectado agora (aperto de mão feito). Volta a `false`
+    /// quando a conexão cai ou a tarefa de conexão para.
     pub fn is_connected(&self) -> bool {
         *self.inner.connected.borrow()
     }
@@ -206,53 +216,90 @@ async fn connection_loop(
         if let Ok(client) =
             Client::connect_timeout(&socket, &inner.app, SHELL_APP, SHELL_TIMEOUT).await
         {
-            attempt = 0;
+            let started = tokio::time::Instant::now();
             // Pedidos avulsos de antes da conexão não valem.
             while actions.try_recv().is_ok() {}
-            inner.connected.send_replace(true);
-            session(&client, &mut desired, &mut actions).await;
-            inner.connected.send_replace(false);
+            let answered = {
+                // Volta a `false` também se a tarefa for abortada no meio.
+                let _connected = Connected::new(&inner.connected);
+                session(&client, &mut desired, &mut actions).await
+            };
             while actions.try_recv().is_ok() {}
+            // Um shell que aceita e fecha logo não pode fazer a tarefa
+            // reconectar a cada 100 ms: a espera só volta ao início se a sessão
+            // valeu (o shell respondeu um pedido, ou ela durou o bastante).
+            if answered || started.elapsed() >= HEALTHY_SESSION {
+                attempt = 0;
+            }
         }
         tokio::time::sleep(backoff(attempt)).await;
         attempt = attempt.saturating_add(1);
     }
 }
 
-/// Mantém o shell igual ao desejado até a conexão cair.
+/// Marca o shell como conectado enquanto vive.
+struct Connected<'a>(&'a watch::Sender<bool>);
+
+impl<'a> Connected<'a> {
+    fn new(tx: &'a watch::Sender<bool>) -> Self {
+        tx.send_replace(true);
+        Connected(tx)
+    }
+}
+
+impl Drop for Connected<'_> {
+    fn drop(&mut self) {
+        self.0.send_replace(false);
+    }
+}
+
+/// Mantém o shell igual ao desejado até a conexão cair. Devolve se o shell
+/// respondeu algum pedido nesta sessão.
 async fn session(
     client: &Client,
     desired: &mut watch::Receiver<Desired>,
     actions: &mut mpsc::UnboundedReceiver<Action>,
-) {
+) -> bool {
     // O shell novo não tem nada nosso: o aplicado começa vazio.
     let mut applied = Desired::default();
+    let mut answered = false;
     loop {
         let want = desired.borrow_and_update().clone();
-        if apply(client, &mut applied, &want).await.is_err() {
-            return;
+        if apply(client, &mut applied, &want, &mut answered)
+            .await
+            .is_err()
+        {
+            return answered;
         }
         tokio::select! {
+            // `biased`: uma mudança do estado desejado sai antes de um pedido
+            // avulso que chegou no mesmo despertar.
+            biased;
             r = desired.changed() => {
                 if r.is_err() {
-                    return;
+                    return answered;
                 }
             }
             Some((method, params)) = actions.recv() => {
-                if call(client, method, Some(params)).await.is_err() {
-                    return;
+                if call(client, method, Some(params), &mut answered).await.is_err() {
+                    return answered;
                 }
             }
-            _ = client.closed() => return,
+            _ = client.closed() => return answered,
         }
     }
 }
 
 /// Manda a diferença entre `applied` e `want`, um pedido por vez.
-async fn apply(client: &Client, applied: &mut Desired, want: &Desired) -> Result<(), ClientError> {
+async fn apply(
+    client: &Client,
+    applied: &mut Desired,
+    want: &Desired,
+    answered: &mut bool,
+) -> Result<(), ClientError> {
     for (id, item) in &want.bar {
         if applied.bar.get(id) != Some(item) {
-            call(client, BAR_SET, Some(to_value(item))).await?;
+            call(client, BAR_SET, Some(to_value(item)), answered).await?;
             applied.bar.insert(id.clone(), item.clone());
         }
     }
@@ -267,6 +314,7 @@ async fn apply(client: &Client, applied: &mut Desired, want: &Desired) -> Result
             client,
             BAR_CLEAR,
             Some(to_value(&BarClearParams { id: id.clone() })),
+            answered,
         )
         .await?;
         applied.bar.remove(&id);
@@ -277,9 +325,9 @@ async fn apply(client: &Client, applied: &mut Desired, want: &Desired) -> Result
                 let p = DndRequestParams {
                     reason: reason.clone(),
                 };
-                call(client, DND_REQUEST, Some(to_value(&p))).await?;
+                call(client, DND_REQUEST, Some(to_value(&p)), answered).await?;
             }
-            None => call(client, DND_RELEASE, None).await?,
+            None => call(client, DND_RELEASE, None, answered).await?,
         }
         applied.dnd = want.dnd.clone();
     }
@@ -288,10 +336,24 @@ async fn apply(client: &Client, applied: &mut Desired, want: &Desired) -> Result
 
 /// Um pedido ao shell, com prazo. Erro de conexão (ou prazo vencido) volta como
 /// `Err` e derruba a sessão; um erro do próprio shell (`Rpc`, resposta estranha)
-/// conta como aplicado, para não repetir o mesmo pedido sem fim.
-async fn call(client: &Client, method: &str, params: Option<Value>) -> Result<(), ClientError> {
+/// conta como aplicado (e vai para o stderr), para não repetir o mesmo pedido
+/// sem fim. `answered` marca que o shell respondeu.
+async fn call(
+    client: &Client,
+    method: &str,
+    params: Option<Value>,
+    answered: &mut bool,
+) -> Result<(), ClientError> {
     match client.call_timeout(method, params, SHELL_TIMEOUT).await {
-        Ok(_) | Err(ClientError::Rpc(_) | ClientError::Decode(_)) => Ok(()),
+        Ok(_) => {
+            *answered = true;
+            Ok(())
+        }
+        Err(e @ (ClientError::Rpc(_) | ClientError::Decode(_))) => {
+            *answered = true;
+            eprintln!("lucerna: o shell recusou {method}: {e}");
+            Ok(())
+        }
         Err(e) => Err(e),
     }
 }
