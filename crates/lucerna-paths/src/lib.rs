@@ -64,7 +64,8 @@ impl Env {
         self.base(&self.xdg_data_home, ".local/share")
     }
 
-    fn config_home(&self) -> Result<PathBuf, PathsError> {
+    /// `$XDG_CONFIG_HOME` (se absoluto) ou `$HOME/.config`.
+    pub fn config_home(&self) -> Result<PathBuf, PathsError> {
         self.base(&self.xdg_config_home, ".config")
     }
 
@@ -72,10 +73,16 @@ impl Env {
         self.base(&self.xdg_cache_home, ".cache")
     }
 
-    fn runtime_lucerna(&self) -> Result<PathBuf, PathsError> {
+    /// `$XDG_RUNTIME_DIR`, se absoluto; senão [`PathsError::NoRuntimeDir`]
+    /// (nunca `/tmp`).
+    pub fn runtime_dir(&self) -> Result<PathBuf, PathsError> {
         Self::absolute(&self.xdg_runtime_dir)
-            .map(|p| p.join("lucerna"))
+            .map(Path::to_path_buf)
             .ok_or(PathsError::NoRuntimeDir)
+    }
+
+    fn runtime_lucerna(&self) -> Result<PathBuf, PathsError> {
+        Ok(self.runtime_dir()?.join("lucerna"))
     }
 }
 

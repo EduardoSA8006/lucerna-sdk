@@ -212,3 +212,32 @@ fn app_id_length_limits_and_message() {
         "Nome de app inválido: \"Bad\" (use a-z, 0-9 e \"-\", começando por letra, até 32)."
     );
 }
+
+#[test]
+fn env_config_home_and_runtime_dir() {
+    let e = env("/home/u");
+    assert_eq!(e.config_home().unwrap(), PathBuf::from("/home/u/.config"));
+    assert_eq!(e.runtime_dir().unwrap(), PathBuf::from("/run/user/1000"));
+    let e = Env {
+        xdg_config_home: Some("/cfg".into()),
+        ..env("/home/u")
+    };
+    assert_eq!(e.config_home().unwrap(), PathBuf::from("/cfg"));
+    // Relativo não vale: cai no HOME (config) ou é erro (runtime).
+    let e = Env {
+        home: Some("/home/u".into()),
+        xdg_config_home: Some("cfg".into()),
+        xdg_runtime_dir: Some("run".into()),
+        ..Env::default()
+    };
+    assert_eq!(e.config_home().unwrap(), PathBuf::from("/home/u/.config"));
+    assert!(matches!(e.runtime_dir(), Err(PathsError::NoRuntimeDir)));
+    assert!(matches!(
+        Env::default().config_home(),
+        Err(PathsError::NoHome)
+    ));
+    assert!(matches!(
+        Env::default().runtime_dir(),
+        Err(PathsError::NoRuntimeDir)
+    ));
+}
