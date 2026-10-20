@@ -18,6 +18,9 @@ use std::path::PathBuf;
 
 use lucerna_paths::PathsError;
 
+/// Tipos do protocolo que os apps usam com o serviço.
+pub use lucerna_protocol::{BarItem, RpcError};
+
 pub use activation::{Activation, SocketGuard};
 pub use idle::{WorkGuard, WorkTracker};
 pub use schedule::{

@@ -10,6 +10,10 @@
 
 pub mod render;
 
+/// O `clap` desta versão, para o app declarar os subcomandos sem depender dele
+/// direto (e sem descasar a versão).
+pub use clap;
+
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::Path;
