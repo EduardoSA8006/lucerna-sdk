@@ -9,7 +9,7 @@ Um repositório por produto, mais o `lucerna-sdk` como base comum. Todos têm as
 | Repositório | Papel |
 |---|---|
 | [`lucerna-shell`](https://github.com/lucerna-desktop/lucerna-shell) | O shell, em Quickshell (QML). Só a interface. |
-| [`lucerna-sdk`](https://github.com/lucerna-desktop/lucerna-sdk) | Base comum: o protocolo de conversa com o shell e o manifesto dos apps. |
+| [`lucerna-sdk`](https://github.com/lucerna-desktop/lucerna-sdk) | Base comum: o protocolo, o esqueleto do serviço e da linha de comando, os caminhos e o manifesto dos apps. |
 | [`lucernad`](https://github.com/lucerna-desktop/lucernad) | Daemon com a lógica do shell (espectro, sistema, área de transferência e mais). |
 | [`lucerna-phone`](https://github.com/lucerna-desktop/lucerna-phone) | Gerenciador de celulares. |
 | [`lucerna-phone-android`](https://github.com/lucerna-desktop/lucerna-phone-android) | App Android do `lucerna-phone`. |
@@ -45,15 +45,18 @@ Sem o app instalado, o painel não existe.
 
 Os painéis dos apps abrem como os de hoje, por atalho, IPC ou ícone na barra, e seguem a regra de fechar os outros painéis. Isto é uma suposição aceita, ainda sem implementação.
 
-## Protocolo (proposta)
+## Protocolo
 
-Proposta, ainda a definir:
+Definido em [`superpowers/specs/2026-10-19-protocolo-design.md`](superpowers/specs/2026-10-19-protocolo-design.md). Em resumo:
 
-- um socket Unix por app, em `$XDG_RUNTIME_DIR/lucerna/<app>.sock`;
-- mensagens JSON versionadas;
-- atualizações enviadas pelo app.
+- um socket Unix por app, em `$XDG_RUNTIME_DIR/lucerna/<app>.sock`, com JSON-RPC 2.0, uma mensagem por linha;
+- aperto de mão (`lucerna.hello`) com a versão do protocolo (`MAJOR.MINOR`; compatível com o mesmo `MAJOR`);
+- tópicos de estado que o serviço manda inteiros a cada mudança (`lucerna.subscribe` e `lucerna.state`), e tópicos contínuos para dados rápidos, como o espectro;
+- o socket do shell (`shell.sock`), no mesmo protocolo, para os pedidos do app: barra, não perturbe, abrir a TUI e abrir o painel;
+- o manifesto JSON de cada app (`schema` 1), com a versão da API de componentes do painel;
+- um binário por app, `lucerna-<app>`: a TUI, a linha de comando e, com `serve`, o serviço.
 
-O `lucerna-sdk` traz os crates do protocolo e do manifesto, publicados no crates.io.
+O `lucerna-sdk` traz os crates disso tudo (`lucerna-protocol`, `lucerna-ipc`, `lucerna-service`, `lucerna-cli`, `lucerna-paths` e `lucerna-manifest`), publicados no crates.io, e o app de exemplo `lucerna-hello`.
 
 ## Serviço sob demanda
 
@@ -61,10 +64,12 @@ O serviço é a única parte que mexe nos dados do app. Isso vale para o painel 
 
 - **Os dois são clientes do serviço.** Como ninguém mexe nos dados por fora, os dois nunca brigam pelo mesmo dado, e o que muda num aparece na hora no outro.
 - **A TUI é separada do painel e é uma alternativa a ele.** O shell nunca abre a TUI para conversar com o app.
-- **O painel abre o app sozinho, sem TUI.** Ele conecta ao socket, e o serviço sobe por ativação de socket do systemd do usuário (`<app>.socket` + `<app>.service`). Se o serviço não estiver rodando, a TUI o sobe pelo mesmo caminho.
+- **O painel abre o app sozinho, sem TUI.** Ele conecta ao socket, e o serviço sobe por ativação de socket do systemd do usuário (`lucerna-<app>.socket` + `lucerna-<app>.service`). Se o serviço não estiver rodando, a TUI o sobe pelo mesmo caminho.
 - **O serviço não fica rodando o tempo todo.** Ele sobe quando um cliente conecta, sai sozinho depois de um tempo sem clientes e sem trabalho pendente e, se cair, o systemd reinicia.
 
-**Trabalho agendado sem o serviço rodando (proposta):** um lembrete da rotina, por exemplo, precisa acontecer com o serviço parado. Então o serviço registra um timer do systemd do usuário para o próximo horário. O timer sobe o serviço, que avisa pelas notificações do shell e volta a sair. O tempo de ociosidade e o mecanismo exato do timer estão em aberto.
+O serviço sai depois de 60 s sem clientes e sem trabalho pendente (um item na barra ou o não perturbe pedido contam como trabalho); o valor é ajustável por app.
+
+**Trabalho agendado sem o serviço rodando:** um lembrete da rotina, por exemplo, precisa acontecer com o serviço parado. Então o serviço registra um timer do systemd do usuário para o próximo horário (`lucerna-<app>_<nome>.timer`, persistente ou não). O timer sobe o serviço, que avisa pelas notificações do shell, cancela o timer e volta a sair. Os detalhes estão no spec do protocolo.
 
 ## Painel e TUI
 
@@ -101,13 +106,10 @@ Estas capacidades vêm dos casos dos apps:
 
 ## Em aberto
 
-- O formato exato do protocolo e do manifesto, incluindo as mensagens de estado, de ação, dos itens na barra, das notificações, do controle do não perturbe e do pedido para abrir na TUI.
-- O versionamento: do protocolo, do manifesto e da API de componentes QML.
+O protocolo, o manifesto, o versionamento, a ociosidade, os timers e o esqueleto do serviço foram fechados no spec do protocolo. Continua em aberto:
+
 - O empacotamento, incluindo o AUR.
 - A forma do `lucernad`: um daemon com módulos ou vários binários.
-- O tempo de ociosidade do serviço antes de sair.
-- O mecanismo dos timers do systemd para o trabalho agendado.
-- O que o SDK oferece para o serviço sob demanda: um crate com a ativação por socket e a saída por ociosidade?
 
 ## Futuro
 
