@@ -99,6 +99,7 @@ version = "0.1.0"
 dependencies = [
  "lucerna-protocol",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]
