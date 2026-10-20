@@ -94,7 +94,13 @@ Códigos do JSON-RPC (`-32700` a `-32603`) como na especificação, mais os do p
 
 ## Pedidos ao shell: o socket do shell
 
-O shell também atende um socket, `$XDG_RUNTIME_DIR/lucerna/shell.sock`, no **mesmo** protocolo (aperto de mão com `client` = o nome do app). É por ele que o app pede coisas ao shell. Métodos da versão 1:
+O shell também atende um socket, `$XDG_RUNTIME_DIR/lucerna/shell.sock`, no **mesmo** protocolo (aperto de mão com `client` = o nome do app e `app` = `"shell"`; o shell responde com `"app":"shell"`, e por isso `shell` é um id reservado, que nenhum app pode usar):
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"lucerna.hello","params":{"protocol":"1.0","client":"routine","app":"shell"}}
+```
+
+É por ele que o app pede coisas ao shell. Métodos da versão 1:
 
 | Método | O que faz |
 | --- | --- |

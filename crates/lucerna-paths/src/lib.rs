@@ -3,6 +3,9 @@
 //!
 //! Regras puras: nada aqui lê o ambiente sozinho além de [`Env::from_process`];
 //! os testes passam um [`Env`] explícito.
+//!
+//! **Protocolo:** não fala o protocolo; as pastas e o socket
+//! (`$XDG_RUNTIME_DIR/lucerna/<app>.sock`) são os do protocolo 1.0.
 
 use std::{
     fs, io,

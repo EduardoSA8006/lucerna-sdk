@@ -1,6 +1,9 @@
 #![warn(missing_docs)]
 //! Esqueleto da linha de comando dos apps do Lucerna.
 //!
+//! **Protocolo:** fala o protocolo 1.0 (pelo `lucerna-ipc`), com `client` =
+//! `cli` no aperto de mão.
+//!
 //! O app declara os subcomandos ([`CliCommand`]) e cada um vira um método do
 //! protocolo. O [`CliApp`] acrescenta os comuns (`status`, `watch <tópico>`), os
 //! ocultos `serve` e `tui <args…>` e a opção global `--json`, com a ajuda em

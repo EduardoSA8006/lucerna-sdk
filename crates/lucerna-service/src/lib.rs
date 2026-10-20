@@ -1,6 +1,10 @@
 #![warn(missing_docs)]
 //! Esqueleto do serviço de um app do Lucerna.
 //!
+//! **Protocolo:** fala o protocolo 1.0 (pelo `lucerna-ipc`), tanto no socket do
+//! app quanto no `shell.sock` (onde se apresenta com `client` = o id do app e
+//! `app` = `"shell"`).
+//!
 //! Compõe o servidor do [`lucerna_ipc`] com a ativação pelo systemd (ou o socket
 //! criado à mão, no desenvolvimento), a saída por ociosidade e a conexão ao
 //! `shell.sock` ([`Shell`]) e os timers do systemd do usuário ([`schedule`]).

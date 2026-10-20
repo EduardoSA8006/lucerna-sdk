@@ -1,6 +1,10 @@
 #![warn(missing_docs)]
 //! Manifesto JSON dos apps do Lucerna: leitura, validação e compatibilidade
 //! da `api` do painel com a do shell.
+//!
+//! **Versões:** lê o manifesto `schema` 1 ([`SCHEMA`]); não fala o protocolo,
+//! só usa o tipo de versão `MAJOR.MINOR` do `lucerna-protocol` (protocolo 1.0)
+//! para a `api` do painel.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
